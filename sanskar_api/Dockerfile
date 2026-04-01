@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════
 # Stage 1: Builder — compile Rust release binary
 # ═══════════════════════════════════════════════
-FROM rust:1.83-slim-bookworm AS builder
+FROM rust:1.85-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
