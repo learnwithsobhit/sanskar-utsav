@@ -11,13 +11,13 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Cache dependency compilation
-COPY Cargo.toml Cargo.lock ./
+COPY sanskar_api/Cargo.toml sanskar_api/Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release && rm -rf src
 
 # Build actual application
-COPY src/ src/
-COPY migrations/ migrations/
+COPY sanskar_api/src/ src/
+COPY sanskar_api/migrations/ migrations/
 RUN touch src/main.rs && cargo build --release
 
 # ═══════════════════════════════════════════════
@@ -28,6 +28,7 @@ FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -36,7 +37,7 @@ WORKDIR /app
 COPY --from=builder /app/target/release/sanskar_api ./sanskar_api
 
 # Copy migrations (needed for sqlx::migrate! at runtime)
-COPY migrations/ migrations/
+COPY --from=builder /app/migrations/ migrations/
 
 # Default port
 ENV PORT=8080
