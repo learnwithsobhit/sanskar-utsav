@@ -1,0 +1,12 @@
+pub mod health;
+pub mod auth_routes;
+pub mod event_routes;
+pub mod guest_routes;
+pub mod media_routes;
+pub mod announcement_routes;
+pub mod notification_routes;
+pub mod blessing_routes;
+pub mod rsvp_routes;
+pub mod admin_routes;
+pub mod chat_routes;
+pub mod ws_handler;
