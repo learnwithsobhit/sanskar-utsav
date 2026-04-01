@@ -20,14 +20,14 @@ async fn main() -> std::io::Result<()> {
     // ── Configuration ──
     let cfg = AppConfig::from_env();
 
-    // ── Telemetry (optional — falls back to stdout if OTEL unavailable) ──
+    // ── Telemetry ──
     let _otel_guard = telemetry::init_telemetry(&cfg.otel_service_name, &cfg.otel_endpoint);
     tracing::info!("🕉️  Sanskar Utsav API starting...");
 
     // ── PostgreSQL ──
     tracing::info!("📦 Connecting to PostgreSQL...");
     let pool = PgPoolOptions::new()
-        .max_connections(20)
+        .max_connections(10)
         .connect(&cfg.database_url)
         .await
         .expect("Failed to connect to PostgreSQL");
@@ -48,22 +48,12 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to connect to Redis");
     tracing::info!("✅ Redis connected");
 
-    // ── NATS (optional — app works without it) ──
-    let nats = if cfg.nats_url.is_empty() {
-        tracing::warn!("⚠️  NATS_URL not set — running without message broker");
-        broker::NatsBroker::noop()
-    } else {
-        match broker::NatsBroker::connect(&cfg.nats_url).await {
-            Ok(n) => {
-                tracing::info!("✅ NATS connected");
-                n
-            }
-            Err(e) => {
-                tracing::warn!("⚠️  NATS connection failed ({e}) — running without broker");
-                broker::NatsBroker::noop()
-            }
-        }
-    };
+    // ── NATS ──
+    tracing::info!("📦 Connecting to NATS...");
+    let nats = broker::NatsBroker::connect(&cfg.nats_url)
+        .await
+        .expect("Failed to connect to NATS");
+    tracing::info!("✅ NATS connected");
 
     // ── S3 Client (MinIO / AWS) ──
     tracing::info!("📦 Initializing S3 client...");

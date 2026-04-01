@@ -1,13 +1,7 @@
 /// API configuration for Sanskar Utsav.
-///
-/// Uses compile-time dart-define for production builds:
-///   flutter build web --dart-define=API_BASE_URL=https://your-api.railway.app
 class ApiConfig {
-  // Use dart-define for production, fallback to localhost for dev
-  static const String baseUrl = String.fromEnvironment(
-    'API_BASE_URL',
-    defaultValue: 'http://localhost:8080',
-  );
+  // Change this to your deployed backend URL
+  static const String baseUrl = 'http://localhost:8080';
   static const String apiPrefix = '/api';
 
   static String get apiUrl => '$baseUrl$apiPrefix';
