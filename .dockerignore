@@ -1,0 +1,5 @@
+sanskar_api/target/
+sanskar_api/.env
+sanskar_app/
+.git/
+*.md
