@@ -1,7 +1,6 @@
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "sanskar_api/Dockerfile"
-watchPatterns = ["sanskar_api/**"]
+dockerfilePath = "Dockerfile"
 
 [deploy]
 healthcheckPath = "/health"
