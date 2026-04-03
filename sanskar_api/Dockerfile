@@ -1,7 +1,7 @@
 # ══════════════════════════════════════════════════
 # Stage 1: Build the Rust binary
 # ══════════════════════════════════════════════════
-FROM rust:1.82-slim-bookworm AS builder
+FROM rust:1.91.1-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -11,13 +11,13 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Cache dependencies — copy manifests first
-COPY Cargo.toml Cargo.lock ./
+COPY sanskar_api/Cargo.toml sanskar_api/Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs
 RUN cargo build --release && rm -rf src
 
 # Build the actual application
-COPY src/ src/
-COPY migrations/ migrations/
+COPY sanskar_api/src/ src/
+COPY sanskar_api/migrations/ migrations/
 RUN touch src/main.rs && cargo build --release
 
 # ══════════════════════════════════════════════════
@@ -29,7 +29,7 @@ WORKDIR /app
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
-    ca-certificates libssl3 \
+    ca-certificates libssl3 curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the built binary and migrations

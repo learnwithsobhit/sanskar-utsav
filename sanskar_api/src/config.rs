@@ -38,9 +38,9 @@ impl AppConfig {
             redis_url: env::var("REDIS_URL")
                 .unwrap_or_else(|_| "redis://127.0.0.1:6379".into()),
             nats_url: env::var("NATS_URL")
-                .unwrap_or_else(|_| "nats://127.0.0.1:4222".into()),
+                .unwrap_or_default(),
             otel_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
-                .unwrap_or_else(|_| "http://localhost:4317".into()),
+                .unwrap_or_default(),
             otel_service_name: env::var("OTEL_SERVICE_NAME")
                 .unwrap_or_else(|_| "sanskar-api".into()),
             admin_phones,

@@ -113,7 +113,7 @@ deploy_frontend() {
     # Build Flutter web
     print_step "Building Flutter web app..."
     cd "$APP_DIR"
-    flutter build web --release --web-renderer canvaskit \
+    flutter build web --release \
         --dart-define="API_URL=$API_URL"
 
     print_success "Flutter build complete"

@@ -8,7 +8,7 @@ class ApiConfig {
   // Production URL — set via: flutter build web --dart-define=API_URL=https://your-api.railway.app
   static const String _prodUrl = String.fromEnvironment(
     'API_URL',
-    defaultValue: 'https://sanskar-api.railway.app',
+    defaultValue: 'https://sanskar-api-production.up.railway.app',
   );
 
   // Dev URL for local development
