@@ -1,4 +1,27 @@
+# Build artifacts
 target/
 node_modules/
 .dart_tool/
 build/
+
+# Environment secrets (NEVER commit these)
+.env
+sanskar_api/.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Flutter
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+
+# Firebase
+.firebase/

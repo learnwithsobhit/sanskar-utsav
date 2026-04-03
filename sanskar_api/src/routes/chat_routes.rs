@@ -284,7 +284,7 @@ pub async fn get_messages(
 pub async fn send_message(
     req: HttpRequest,
     pool: web::Data<PgPool>,
-    nats: web::Data<NatsBroker>,
+    nats: web::Data<Option<NatsBroker>>,
     path: web::Path<Uuid>,
     body: web::Json<SendMessageRequest>,
 ) -> HttpResponse {
@@ -339,14 +339,14 @@ pub async fn send_message(
             .execute(pool.get_ref()).await;
 
             // Publish for real-time delivery via WebSocket
-            let _ = nats.publish("sanskar.chat.message", &serde_json::json!({
+            if let Some(n) = nats.as_ref() { let _ = n.publish("sanskar.chat.message", &serde_json::json!({
                 "room_id": room_id,
                 "message_id": msg.id,
                 "sender_id": guest.id,
                 "sender_name": guest.name,
                 "message_type": msg.message_type,
                 "content": msg.content,
-            })).await;
+            })).await; }
 
             HttpResponse::Created().json(serde_json::json!({
                 "success": true,
@@ -367,7 +367,7 @@ pub async fn send_message(
 pub async fn initiate_call(
     req: HttpRequest,
     pool: web::Data<PgPool>,
-    nats: web::Data<NatsBroker>,
+    nats: web::Data<Option<NatsBroker>>,
     body: web::Json<InitiateCallRequest>,
 ) -> HttpResponse {
     let guest = match extract_guest(&req, &pool).await {
@@ -406,13 +406,13 @@ pub async fn initiate_call(
             }
 
             // Notify via NATS
-            let _ = nats.publish("sanskar.chat.call", &serde_json::json!({
+            if let Some(n) = nats.as_ref() { let _ = n.publish("sanskar.chat.call", &serde_json::json!({
                 "call_id": call_id,
                 "caller_id": guest.id,
                 "caller_name": guest.name,
                 "call_type": body.call_type,
                 "participant_ids": body.participant_ids,
-            })).await;
+            })).await; }
 
             HttpResponse::Created().json(serde_json::json!({
                 "success": true,

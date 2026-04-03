@@ -20,11 +20,11 @@ async fn main() -> std::io::Result<()> {
     // ── Configuration ──
     let cfg = AppConfig::from_env();
 
-    // ── Telemetry ──
+    // ── Telemetry (optional — falls back to logs-only if no OTLP endpoint) ──
     let _otel_guard = telemetry::init_telemetry(&cfg.otel_service_name, &cfg.otel_endpoint);
     tracing::info!("🕉️  Sanskar Utsav API starting...");
 
-    // ── PostgreSQL ──
+    // ── PostgreSQL (required) ──
     tracing::info!("📦 Connecting to PostgreSQL...");
     let pool = PgPoolOptions::new()
         .max_connections(10)
@@ -41,19 +41,29 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to run migrations");
     tracing::info!("✅ Migrations complete");
 
-    // ── Redis ──
+    // ── Redis (required) ──
     tracing::info!("📦 Connecting to Redis...");
     let redis = cache::RedisCache::connect(&cfg.redis_url)
         .await
         .expect("Failed to connect to Redis");
     tracing::info!("✅ Redis connected");
 
-    // ── NATS ──
-    tracing::info!("📦 Connecting to NATS...");
-    let nats = broker::NatsBroker::connect(&cfg.nats_url)
-        .await
-        .expect("Failed to connect to NATS");
-    tracing::info!("✅ NATS connected");
+    // ── NATS (optional — skip if URL is empty or connection fails) ──
+    let nats = if cfg.nats_url.is_empty() {
+        tracing::warn!("⚠️  NATS_URL not set, running without NATS");
+        None
+    } else {
+        match broker::NatsBroker::connect(&cfg.nats_url).await {
+            Ok(n) => {
+                tracing::info!("✅ NATS connected");
+                Some(n)
+            }
+            Err(e) => {
+                tracing::warn!("⚠️  NATS connection failed ({e}), running without NATS");
+                None
+            }
+        }
+    };
 
     // ── S3 Client (MinIO / AWS) ──
     tracing::info!("📦 Initializing S3 client...");

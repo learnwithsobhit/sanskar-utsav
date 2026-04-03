@@ -1,7 +1,21 @@
+import 'package:flutter/foundation.dart';
+
 /// API configuration for Sanskar Utsav.
+///
+/// In development, uses localhost:8080.
+/// In production, reads from --dart-define=API_URL=https://your-railway-url.
 class ApiConfig {
-  // Change this to your deployed backend URL
-  static const String baseUrl = 'http://localhost:8080';
+  // Production URL — set via: flutter build web --dart-define=API_URL=https://your-api.railway.app
+  static const String _prodUrl = String.fromEnvironment(
+    'API_URL',
+    defaultValue: 'https://sanskar-api.railway.app',
+  );
+
+  // Dev URL for local development
+  static const String _devUrl = 'http://localhost:8080';
+
+  // Auto-detect: use dev URL in debug mode, production URL otherwise
+  static String get baseUrl => kDebugMode ? _devUrl : _prodUrl;
   static const String apiPrefix = '/api';
 
   static String get apiUrl => '$baseUrl$apiPrefix';

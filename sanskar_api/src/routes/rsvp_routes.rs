@@ -10,7 +10,7 @@ use crate::models::rsvp::*;
 pub async fn submit_rsvp(
     req: HttpRequest,
     pool: web::Data<PgPool>,
-    nats: web::Data<NatsBroker>,
+    nats: web::Data<Option<NatsBroker>>,
     path: web::Path<i32>,
     body: web::Json<RsvpRequest>,
 ) -> HttpResponse {
@@ -43,11 +43,11 @@ pub async fn submit_rsvp(
     {
         Ok(rsvp) => {
             // Publish RSVP update
-            let _ = nats.publish(subjects::RSVP_UPDATED, &serde_json::json!({
+            if let Some(n) = nats.as_ref() { let _ = n.publish(subjects::RSVP_UPDATED, &serde_json::json!({
                 "guest_id": guest.id,
                 "event_id": event_id,
                 "status": rsvp.status,
-            })).await;
+            })).await; }
 
             HttpResponse::Ok().json(serde_json::json!({
                 "success": true,

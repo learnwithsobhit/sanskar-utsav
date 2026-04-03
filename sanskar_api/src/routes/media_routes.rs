@@ -108,7 +108,7 @@ pub async fn presign_upload(
 pub async fn create_media(
     req: HttpRequest,
     pool: web::Data<PgPool>,
-    nats: web::Data<NatsBroker>,
+    nats: web::Data<Option<NatsBroker>>,
     body: web::Json<CreateMediaRequest>,
 ) -> HttpResponse {
     let guest = match extract_guest(&req, &pool).await {
@@ -138,11 +138,11 @@ pub async fn create_media(
     {
         Ok(item) => {
             // Publish event for async processing
-            let _ = nats.publish(subjects::MEDIA_UPLOADED, &serde_json::json!({
+            if let Some(n) = nats.as_ref() { let _ = n.publish(subjects::MEDIA_UPLOADED, &serde_json::json!({
                 "media_id": item.id,
                 "uploaded_by": guest.id,
                 "media_type": item.media_type,
-            })).await;
+            })).await; }
 
             HttpResponse::Created().json(serde_json::json!({
                 "success": true,
@@ -292,7 +292,7 @@ pub async fn proxy_upload(
     req: HttpRequest,
     pool: web::Data<PgPool>,
     s3: web::Data<aws_sdk_s3::Client>,
-    nats: web::Data<NatsBroker>,
+    nats: web::Data<Option<NatsBroker>>,
     mut payload: Multipart,
 ) -> HttpResponse {
     let guest = match extract_guest(&req, &pool).await {
@@ -404,11 +404,11 @@ pub async fn proxy_upload(
     .await
     {
         Ok(item) => {
-            let _ = nats.publish(crate::broker::subjects::MEDIA_UPLOADED, &serde_json::json!({
+            if let Some(n) = nats.as_ref() { let _ = n.publish(crate::broker::subjects::MEDIA_UPLOADED, &serde_json::json!({
                 "media_id": item.id,
                 "uploaded_by": guest.id,
                 "media_type": item.media_type,
-            })).await;
+            })).await; }
 
             HttpResponse::Created().json(serde_json::json!({
                 "success": true,

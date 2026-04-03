@@ -359,7 +359,7 @@ pub async fn admin_create_announcement(
     req: HttpRequest,
     pool: web::Data<PgPool>,
     cache: web::Data<RedisCache>,
-    nats: web::Data<NatsBroker>,
+    nats: web::Data<Option<NatsBroker>>,
     body: web::Json<AdminCreateAnnouncementRequest>,
 ) -> HttpResponse {
     let admin = match extract_admin(&req, &pool).await {
@@ -386,11 +386,11 @@ pub async fn admin_create_announcement(
             let _ = cache.del("announcements:active").await;
 
             // Publish to NATS for real-time delivery
-            let _ = nats.publish(subjects::ANNOUNCEMENT_NEW, &serde_json::json!({
+            if let Some(n) = nats.as_ref() { let _ = n.publish(subjects::ANNOUNCEMENT_NEW, &serde_json::json!({
                 "id": ann.id,
                 "title": ann.title,
                 "priority": ann.priority,
-            })).await;
+            })).await; }
 
             HttpResponse::Created().json(serde_json::json!({
                 "success": true,
@@ -541,7 +541,7 @@ pub async fn admin_rsvp_summary(
 pub async fn admin_send_notification(
     req: HttpRequest,
     pool: web::Data<PgPool>,
-    nats: web::Data<NatsBroker>,
+    nats: web::Data<Option<NatsBroker>>,
     body: web::Json<AdminSendNotificationRequest>,
 ) -> HttpResponse {
     if let Err(_) = extract_admin(&req, &pool).await {
@@ -581,11 +581,11 @@ pub async fn admin_send_notification(
     }
 
     // Publish to NATS for push notification delivery
-    let _ = nats.publish(subjects::NOTIFICATION_PUSH, &serde_json::json!({
+    if let Some(n) = nats.as_ref() { let _ = n.publish(subjects::NOTIFICATION_PUSH, &serde_json::json!({
         "title": body.title,
         "body": body.body,
         "guest_count": count,
-    })).await;
+    })).await; }
 
     HttpResponse::Ok().json(serde_json::json!({
         "success": true,
@@ -666,7 +666,7 @@ pub async fn admin_patch_media(
 pub async fn admin_broadcast_message(
     req: HttpRequest,
     pool: web::Data<PgPool>,
-    nats: web::Data<NatsBroker>,
+    nats: web::Data<Option<NatsBroker>>,
     body: web::Json<AdminBroadcastRequest>,
 ) -> HttpResponse {
     let admin = match extract_admin(&req, &pool).await {
@@ -697,12 +697,12 @@ pub async fn admin_broadcast_message(
                 .bind(family_group_id).execute(pool.get_ref()).await;
 
             // Notify via NATS for real-time delivery
-            let _ = nats.publish("sanskar.chat.broadcast", &serde_json::json!({
+            if let Some(n) = nats.as_ref() { let _ = n.publish("sanskar.chat.broadcast", &serde_json::json!({
                 "room_id": family_group_id,
                 "message_id": msg_id,
                 "sender_name": admin.name,
                 "content": body.message,
-            })).await;
+            })).await; }
 
             HttpResponse::Ok().json(serde_json::json!({
                 "success": true,
