@@ -118,7 +118,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
-                  onPressed: () => Navigator.pushNamed(context, AppRoutes.adminDashboard),
+                  onPressed: () => Navigator.of(context, rootNavigator: true)
+                      .pushNamed(AppRoutes.adminDashboard),
                   icon: const Icon(Icons.admin_panel_settings),
                   label: const Text('Admin Dashboard'),
                   style: OutlinedButton.styleFrom(

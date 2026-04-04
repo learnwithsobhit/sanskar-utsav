@@ -4,7 +4,7 @@ import 'package:provider/provider.dart';
 import '../../services/auth_service.dart';
 import 'admin_dashboard_screen.dart';
 
-/// Gate for `/admin`: requires login + `is_admin` on current guest.
+/// Gate for `/admin`: requires a loaded guest + `is_admin` (aligned with Profile).
 class AdminEntryScreen extends StatefulWidget {
   const AdminEntryScreen({super.key});
 
@@ -19,7 +19,13 @@ class _AdminEntryScreenState extends State<AdminEntryScreen> {
   Widget build(BuildContext context) {
     final auth = context.watch<AuthService>();
 
-    if (!auth.isLoggedIn) {
+    if (auth.isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (auth.currentGuest == null) {
       if (!_redirected) {
         _redirected = true;
         WidgetsBinding.instance.addPostFrameCallback((_) {

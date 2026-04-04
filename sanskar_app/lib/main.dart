@@ -24,6 +24,7 @@ import 'screens/media_viewer_screen.dart';
 import 'config/routes.dart';
 import 'models/media_item.dart';
 import 'screens/admin/admin_entry_screen.dart';
+import 'screens/unknown_route_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -48,6 +49,9 @@ class SanskarUtsavApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: SanskarTheme.lightTheme,
       initialRoute: '/',
+      routes: {
+        AppRoutes.adminDashboard: (context) => const AdminEntryScreen(),
+      },
       onGenerateRoute: (settings) {
         switch (settings.name) {
           case '/':
@@ -86,10 +90,8 @@ class SanskarUtsavApp extends StatelessWidget {
           case '/media/view':
             final item = settings.arguments as MediaItem;
             return _fade(MediaViewerScreen(item: item));
-          case AppRoutes.adminDashboard:
-            return _slide(const AdminEntryScreen());
           default:
-            return _fade(const SplashScreen());
+            return _fade(UnknownRouteScreen(routeName: settings.name));
         }
       },
     );
