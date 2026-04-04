@@ -1,6 +1,10 @@
+use actix_web::http::header;
+use actix_web::http::StatusCode;
+use actix_web::web::Bytes;
 use actix_web::{get, post, web, HttpRequest, HttpResponse};
 use actix_multipart::Multipart;
 use futures_util::StreamExt;
+use tokio_util::io::ReaderStream;
 use sqlx::PgPool;
 
 use crate::auth::middleware::extract_guest;
@@ -426,10 +430,48 @@ pub async fn proxy_upload(
     }
 }
 
-/// GET /api/media/serve/{prefix}/{filename} — proxy media files from S3 with CORS headers.
-/// This bypasses browser CORS restrictions when loading from MinIO directly.
+/// Parse first `Range: bytes=...` value into inclusive byte range. `total` is object size in bytes.
+fn parse_bytes_range(range_header: &str, total: i64) -> Option<(i64, i64)> {
+    if total <= 0 {
+        return None;
+    }
+    let r = range_header.trim();
+    let bytes_part = r.strip_prefix("bytes=")?;
+    let first = bytes_part.split(',').next()?.trim();
+
+    if let Some(suffix) = first.strip_prefix('-') {
+        let n: i64 = suffix.parse().ok()?;
+        if n <= 0 {
+            return None;
+        }
+        let start = (total - n).max(0);
+        return Some((start, total - 1));
+    }
+
+    let mut iter = first.splitn(2, '-');
+    let start_s = iter.next()?.trim();
+    let end_s = iter.next().unwrap_or("").trim();
+    let start: i64 = if start_s.is_empty() {
+        0
+    } else {
+        start_s.parse().ok()?
+    };
+    let end: i64 = if end_s.is_empty() {
+        total - 1
+    } else {
+        end_s.parse().ok()?
+    };
+    if start > end || start >= total {
+        return None;
+    }
+    Some((start, end.min(total - 1)))
+}
+
+/// GET /api/media/serve/{prefix}/{filename} — stream from S3 with Range support (206) for video seeking.
+/// Previously buffered the entire object in RAM, which made large videos very slow to start.
 #[get("/api/media/serve/{prefix}/{filename}")]
 pub async fn serve_media(
+    req: HttpRequest,
     path: web::Path<(String, String)>,
     s3: web::Data<aws_sdk_s3::Client>,
 ) -> HttpResponse {
@@ -437,27 +479,99 @@ pub async fn serve_media(
     let key = format!("{}/{}", prefix, filename);
     let bucket = std::env::var("S3_BUCKET").unwrap_or_else(|_| "sanskar-utsav-media".to_string());
 
-    match s3.get_object().bucket(&bucket).key(&key).send().await {
-        Ok(output) => {
-            let content_type = output.content_type()
-                .unwrap_or("application/octet-stream")
-                .to_string();
-            let body = output.body.collect().await
-                .map(|data| data.into_bytes().to_vec())
-                .unwrap_or_default();
-
-            HttpResponse::Ok()
-                .insert_header(("Content-Type", content_type))
-                .insert_header(("Cache-Control", "public, max-age=31536000"))
-                .insert_header(("Access-Control-Allow-Origin", "*"))
-                .body(body)
-        }
+    let head = match s3.head_object().bucket(&bucket).key(&key).send().await {
+        Ok(h) => h,
         Err(e) => {
-            tracing::error!("S3 get failed for {key}: {e}");
-            HttpResponse::NotFound().json(serde_json::json!({
+            tracing::error!("S3 head failed for {key}: {e}");
+            return HttpResponse::NotFound().json(serde_json::json!({
                 "success": false,
                 "error": "File not found",
-            }))
+            }));
+        }
+    };
+
+    let total = head.content_length().unwrap_or(0);
+    let content_type = head
+        .content_type()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    if let Some(range_val) = req
+        .headers()
+        .get(header::RANGE)
+        .and_then(|h| h.to_str().ok())
+    {
+        match parse_bytes_range(range_val, total) {
+            Some((start, end)) => {
+                let len = end - start + 1;
+                match s3
+                    .get_object()
+                    .bucket(&bucket)
+                    .key(&key)
+                    .range(format!("bytes={start}-{end}"))
+                    .send()
+                    .await
+                {
+                    Ok(output) => {
+                        let read = output.body.into_async_read();
+                        let stream = ReaderStream::new(read).map(|res| {
+                            res.map_err(|e| {
+                                tracing::error!("S3 range stream error: {e}");
+                                actix_web::error::ErrorInternalServerError("stream error")
+                            })
+                            .map(Bytes::from)
+                        });
+                        HttpResponse::build(StatusCode::PARTIAL_CONTENT)
+                            .insert_header((header::CONTENT_TYPE, content_type))
+                            .insert_header((
+                                header::CONTENT_RANGE,
+                                format!("bytes {start}-{end}/{total}"),
+                            ))
+                            .insert_header((header::CONTENT_LENGTH, len.to_string()))
+                            .insert_header((header::ACCEPT_RANGES, "bytes"))
+                            .insert_header(("Cache-Control", "public, max-age=31536000"))
+                            .insert_header(("Access-Control-Allow-Origin", "*"))
+                            .streaming(stream)
+                    }
+                    Err(e) => {
+                        tracing::error!("S3 get (range) failed for {key}: {e}");
+                        HttpResponse::NotFound().json(serde_json::json!({
+                            "success": false,
+                            "error": "File not found",
+                        }))
+                    }
+                }
+            }
+            None => HttpResponse::build(StatusCode::RANGE_NOT_SATISFIABLE)
+                .insert_header((header::CONTENT_RANGE, format!("bytes */{total}")))
+                .finish(),
+        }
+    } else {
+        match s3.get_object().bucket(&bucket).key(&key).send().await {
+            Ok(output) => {
+                let read = output.body.into_async_read();
+                let stream = ReaderStream::new(read).map(|res| {
+                    res.map_err(|e| {
+                        tracing::error!("S3 stream error: {e}");
+                        actix_web::error::ErrorInternalServerError("stream error")
+                    })
+                    .map(Bytes::from)
+                });
+                HttpResponse::Ok()
+                    .insert_header((header::CONTENT_TYPE, content_type))
+                    .insert_header((header::CONTENT_LENGTH, total.to_string()))
+                    .insert_header((header::ACCEPT_RANGES, "bytes"))
+                    .insert_header(("Cache-Control", "public, max-age=31536000"))
+                    .insert_header(("Access-Control-Allow-Origin", "*"))
+                    .streaming(stream)
+            }
+            Err(e) => {
+                tracing::error!("S3 get failed for {key}: {e}");
+                HttpResponse::NotFound().json(serde_json::json!({
+                    "success": false,
+                    "error": "File not found",
+                }))
+            }
         }
     }
 }

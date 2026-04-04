@@ -16,6 +16,9 @@ class MediaViewerScreen extends StatefulWidget {
 }
 
 class _MediaViewerScreenState extends State<MediaViewerScreen> {
+  /// Require this much data ahead of the playhead before starting (reduces stutter).
+  static const Duration _kMinBufferAhead = Duration(seconds: 2);
+
   late MediaItem _item;
   bool _liked = false;
   List<dynamic> _comments = [];
@@ -27,6 +30,10 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
   bool _videoInitialized = false;
   bool _videoPlaying = false;
   bool _showControls = true;
+  /// User tapped play; we wait until [ _hasAdequateBuffer ] before calling [VideoPlayerController.play].
+  bool _playRequested = false;
+  bool _hideThumbnailOverlay = false;
+  bool _showBufferingMessage = false;
 
   @override
   void initState() {
@@ -39,21 +46,61 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
     }
   }
 
-  Future<void> _initVideo() async {
-    _videoController = VideoPlayerController.networkUrl(Uri.parse(_item.fileUrl))
-      ..addListener(() {
-        if (mounted) {
-          setState(() {
-            _videoPlaying = _videoController!.value.isPlaying;
-          });
-        }
+  bool _hasAdequateBuffer(VideoPlayerValue v) {
+    if (!v.isInitialized) return false;
+    if (v.duration == Duration.zero) return true;
+    final need = v.position + _kMinBufferAhead;
+    if (need >= v.duration) return true;
+    for (final range in v.buffered) {
+      if (range.end >= need) return true;
+    }
+    return false;
+  }
+
+  void _videoListener() {
+    final c = _videoController;
+    if (c == null || !mounted) return;
+    final v = c.value;
+
+    var playTriggered = false;
+    if (_videoInitialized && _playRequested && !v.isPlaying && _hasAdequateBuffer(v)) {
+      c.play();
+      playTriggered = true;
+    }
+
+    final playing = v.isPlaying;
+    final wantHideThumb = playing && v.position > const Duration(milliseconds: 300);
+    final waitingForInitialBuffer =
+        _playRequested && !playing && !_hasAdequateBuffer(v);
+    final midPlayBuffering = playing && v.isBuffering;
+    final bubbling = waitingForInitialBuffer || midPlayBuffering;
+
+    if (playTriggered ||
+        playing != _videoPlaying ||
+        (wantHideThumb && !_hideThumbnailOverlay) ||
+        bubbling != _showBufferingMessage) {
+      setState(() {
+        if (playTriggered) _playRequested = false;
+        _videoPlaying = playing;
+        if (wantHideThumb) _hideThumbnailOverlay = true;
+        _showBufferingMessage = bubbling;
       });
+    }
+  }
+
+  Future<void> _initVideo() async {
+    final controller = VideoPlayerController.networkUrl(Uri.parse(_item.fileUrl));
+    _videoController = controller;
+    controller.addListener(_videoListener);
 
     try {
-      await _videoController!.initialize();
-      if (mounted) {
-        setState(() => _videoInitialized = true);
-      }
+      await controller.initialize();
+      if (!mounted) return;
+      setState(() {
+        _videoInitialized = true;
+        if (_item.thumbnailUrl.isEmpty) _hideThumbnailOverlay = true;
+      });
+      _videoListener();
     } catch (e) {
       debugPrint('Video init error: $e');
     }
@@ -99,11 +146,22 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
   }
 
   void _toggleVideoPlayback() {
-    if (_videoController == null) return;
-    if (_videoController!.value.isPlaying) {
-      _videoController!.pause();
+    final c = _videoController;
+    if (c == null || !_videoInitialized) return;
+    final v = c.value;
+    if (v.isPlaying) {
+      c.pause();
+      setState(() {
+        _playRequested = false;
+        _showBufferingMessage = false;
+      });
+      return;
+    }
+    if (_hasAdequateBuffer(v)) {
+      c.play();
+      setState(() => _playRequested = false);
     } else {
-      _videoController!.play();
+      setState(() => _playRequested = true);
     }
   }
 
@@ -118,6 +176,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
 
   @override
   void dispose() {
+    _videoController?.removeListener(_videoListener);
     _videoController?.dispose();
     _commentController.dispose();
     super.dispose();
@@ -279,34 +338,80 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
   // Video player with controls
   // ═══════════════════════════════════════════════
   Widget _buildVideoPlayer() {
-    if (!_videoInitialized || _videoController == null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const CircularProgressIndicator(color: SanskarTheme.saffron),
-            const SizedBox(height: 16),
-            Text(
-              _item.fileUrl.isEmpty ? 'No video URL' : 'Loading video...',
-              style: const TextStyle(color: Colors.white54, fontSize: 14),
-            ),
-          ],
-        ),
+    if (_item.fileUrl.isEmpty) {
+      return const Center(
+        child: Text('No video URL', style: TextStyle(color: Colors.white54, fontSize: 14)),
       );
     }
+
+    if (!_videoInitialized || _videoController == null) {
+      return Stack(
+        fit: StackFit.expand,
+        alignment: Alignment.center,
+        children: [
+          if (_item.thumbnailUrl.isNotEmpty)
+            Image.network(
+              _item.thumbnailUrl,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+            ),
+          Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CircularProgressIndicator(color: SanskarTheme.saffron),
+              const SizedBox(height: 16),
+              Text(
+                'Loading video...',
+                style: TextStyle(color: Colors.white.withAlpha(200), fontSize: 14),
+              ),
+            ],
+          ),
+        ],
+      );
+    }
+
+    final ctrl = _videoController!;
+    final thumb = _item.thumbnailUrl.isNotEmpty && !_hideThumbnailOverlay;
 
     return GestureDetector(
       onTap: () => setState(() => _showControls = !_showControls),
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // Video
           Center(
             child: AspectRatio(
-              aspectRatio: _videoController!.value.aspectRatio,
-              child: VideoPlayer(_videoController!),
+              aspectRatio: ctrl.value.aspectRatio,
+              child: VideoPlayer(ctrl),
             ),
           ),
+          if (thumb)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Image.network(
+                  _item.thumbnailUrl,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                ),
+              ),
+            ),
+          if (_showBufferingMessage)
+            Positioned.fill(
+              child: Container(
+                color: Colors.black45,
+                alignment: Alignment.center,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(color: SanskarTheme.saffron),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Buffering…',
+                      style: TextStyle(color: Colors.white70, fontSize: 14),
+                    ),
+                  ],
+                ),
+              ),
+            ),
 
           // Play/Pause overlay
           if (_showControls)
@@ -352,7 +457,7 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
                   children: [
                     // Progress bar
                     VideoProgressIndicator(
-                      _videoController!,
+                      ctrl,
                       allowScrubbing: true,
                       padding: const EdgeInsets.symmetric(vertical: 4),
                       colors: const VideoProgressColors(
@@ -367,14 +472,14 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         ValueListenableBuilder<VideoPlayerValue>(
-                          valueListenable: _videoController!,
+                          valueListenable: ctrl,
                           builder: (_, value, __) => Text(
                             _formatDuration(value.position),
                             style: const TextStyle(color: Colors.white70, fontSize: 12),
                           ),
                         ),
                         Text(
-                          _formatDuration(_videoController!.value.duration),
+                          _formatDuration(ctrl.value.duration),
                           style: const TextStyle(color: Colors.white70, fontSize: 12),
                         ),
                       ],

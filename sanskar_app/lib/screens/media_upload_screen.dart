@@ -312,6 +312,17 @@ class _MediaUploadScreenState extends State<MediaUploadScreen> {
                   ),
                 ],
               ),
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Text(
+                  'Videos: MP4 (H.264), 720p–1080p, and fast-start encoding play most smoothly. See sanskar_api/VIDEO_ENCODING.md.',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: SanskarTheme.darkCharcoal.withAlpha(140),
+                    height: 1.35,
+                  ),
+                ),
+              ),
             ] else ...[
               // Preview
               Container(

@@ -82,8 +82,9 @@ pub async fn presign_download(
 }
 
 /// Get the public URL for a file.
-/// In dev mode, routes through the backend proxy to avoid CORS issues.
-/// In production, use S3_PUBLIC_URL (CDN/CloudFront).
+/// Prefer **`S3_PUBLIC_URL`** in production so clients (especially video) hit CDN/S3 directly with HTTP Range;
+/// otherwise URLs go through **`/api/media/serve/...`** on this API (`API_PUBLIC_URL`), which adds latency.
+/// Configure bucket CORS for your web app origin when using a public base URL.
 pub fn public_url(key: &str) -> String {
     // If a CDN/public URL is configured, use it directly
     if let Ok(base) = std::env::var("S3_PUBLIC_URL") {
