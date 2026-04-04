@@ -148,6 +148,7 @@ async fn main() -> std::io::Result<()> {
             .service(routes::admin_routes::admin_delete_announcement)
             .service(routes::admin_routes::admin_rsvp_summary)
             .service(routes::admin_routes::admin_send_notification)
+            .service(routes::admin_routes::admin_list_media)
             .service(routes::admin_routes::admin_pending_media)
             .service(routes::admin_routes::admin_patch_media)
             // Admin Chat

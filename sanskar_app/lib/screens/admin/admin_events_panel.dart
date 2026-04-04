@@ -16,6 +16,55 @@ String? _toHhMm(String? t) {
   return t;
 }
 
+String _formatYmd(DateTime d) =>
+    '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+Future<void> _pickEventDate(
+  BuildContext context,
+  TextEditingController controller,
+  VoidCallback onChanged,
+) async {
+  var initial = DateTime.now();
+  final s = controller.text.trim();
+  if (s.length >= 10) {
+    final parsed = DateTime.tryParse(s.substring(0, 10));
+    if (parsed != null) initial = parsed;
+  }
+  final picked = await showDatePicker(
+    context: context,
+    initialDate: initial,
+    firstDate: DateTime(2020),
+    lastDate: DateTime(2100),
+  );
+  if (picked != null) {
+    controller.text = _formatYmd(picked);
+    onChanged();
+  }
+}
+
+Widget _datePickerField(
+  BuildContext context,
+  TextEditingController controller,
+  String label,
+  VoidCallback onChanged, {
+  bool required = false,
+}) {
+  return TextField(
+    controller: controller,
+    readOnly: true,
+    decoration: InputDecoration(
+      labelText: required ? '$label *' : label,
+      hintText: 'YYYY-MM-DD',
+      suffixIcon: IconButton(
+        icon: const Icon(Icons.calendar_month_outlined),
+        tooltip: 'Pick date',
+        onPressed: () => _pickEventDate(context, controller, onChanged),
+      ),
+    ),
+    onTap: () => _pickEventDate(context, controller, onChanged),
+  );
+}
+
 class AdminEventsPanel extends StatefulWidget {
   const AdminEventsPanel({super.key});
 
@@ -88,7 +137,7 @@ class _AdminEventsPanelState extends State<AdminEventsPanel> {
                 TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'Title *')),
                 TextField(controller: hindiCtrl, decoration: const InputDecoration(labelText: 'Hindi title')),
                 TextField(controller: descCtrl, decoration: const InputDecoration(labelText: 'Description'), maxLines: 2),
-                TextField(controller: dateCtrl, decoration: const InputDecoration(labelText: 'Date YYYY-MM-DD *')),
+                _datePickerField(ctx, dateCtrl, 'Date', () => setLocal(() {}), required: true),
                 TextField(controller: startCtrl, decoration: const InputDecoration(labelText: 'Start HH:MM')),
                 TextField(controller: endCtrl, decoration: const InputDecoration(labelText: 'End HH:MM')),
                 TextField(controller: venueCtrl, decoration: const InputDecoration(labelText: 'Venue')),
@@ -189,7 +238,7 @@ class _AdminEventsPanelState extends State<AdminEventsPanel> {
                 TextField(controller: titleCtrl, decoration: const InputDecoration(labelText: 'Title')),
                 TextField(controller: hindiCtrl, decoration: const InputDecoration(labelText: 'Hindi title')),
                 TextField(controller: descCtrl, decoration: const InputDecoration(labelText: 'Description'), maxLines: 2),
-                TextField(controller: dateCtrl, decoration: const InputDecoration(labelText: 'Date YYYY-MM-DD')),
+                _datePickerField(ctx, dateCtrl, 'Date', () => setLocal(() {})),
                 TextField(controller: startCtrl, decoration: const InputDecoration(labelText: 'Start HH:MM')),
                 TextField(controller: endCtrl, decoration: const InputDecoration(labelText: 'End HH:MM')),
                 TextField(controller: venueCtrl, decoration: const InputDecoration(labelText: 'Venue')),

@@ -14,10 +14,31 @@ class AdminEntryScreen extends StatefulWidget {
 
 class _AdminEntryScreenState extends State<AdminEntryScreen> {
   bool _redirected = false;
+  bool _authReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrapAuth());
+  }
+
+  Future<void> _bootstrapAuth() async {
+    final auth = context.read<AuthService>();
+    if (auth.currentGuest == null) {
+      await auth.tryAutoLogin();
+    }
+    if (mounted) setState(() => _authReady = true);
+  }
 
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthService>();
+
+    if (!_authReady) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
 
     if (auth.isLoading) {
       return const Scaffold(

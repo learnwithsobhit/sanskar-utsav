@@ -63,6 +63,13 @@ class ApiConfig {
   static String get adminRsvpSummary => '$apiUrl/admin/rsvp-summary';
   static String get adminNotify => '$apiUrl/admin/notify';
   static String get adminPendingMedia => '$apiUrl/admin/media/pending';
+
+  /// All media (default) or moderation queue only (`pendingOnly: true`).
+  static String adminMediaList({int page = 1, int perPage = 100, bool pendingOnly = false}) {
+    final p = pendingOnly ? 'true' : 'false';
+    return '$apiUrl/admin/media?page=$page&per_page=$perPage&pending_only=$p';
+  }
+
   static String adminMediaUpdate(int id) => '$apiUrl/admin/media/$id';
 
   static String get adminChatBroadcast => '$apiUrl/admin/chat/broadcast';

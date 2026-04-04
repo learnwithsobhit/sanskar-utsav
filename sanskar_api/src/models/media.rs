@@ -96,6 +96,15 @@ pub struct MediaQuery {
     pub featured_only: Option<bool>,
 }
 
+/// Admin list: all media or pending-only subset.
+#[derive(Debug, Deserialize)]
+pub struct AdminMediaListQuery {
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+    /// When true, same rows as legacy `/admin/media/pending`.
+    pub pending_only: Option<bool>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct NewMediaCommentRequest {
     pub comment: String,

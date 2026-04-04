@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../config/routes.dart';
 import '../config/theme.dart';
 import '../services/auth_service.dart';
+import 'admin/admin_entry_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -118,8 +119,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
-                  onPressed: () => Navigator.of(context, rootNavigator: true)
-                      .pushNamed(AppRoutes.adminDashboard),
+                  onPressed: () {
+                    Navigator.of(context, rootNavigator: true).push<void>(
+                      MaterialPageRoute<void>(
+                        settings: const RouteSettings(
+                          name: AppRoutes.adminDashboard,
+                        ),
+                        builder: (context) => const AdminEntryScreen(),
+                      ),
+                    );
+                  },
                   icon: const Icon(Icons.admin_panel_settings),
                   label: const Text('Admin Dashboard'),
                   style: OutlinedButton.styleFrom(

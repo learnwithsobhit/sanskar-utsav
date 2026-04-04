@@ -11,7 +11,7 @@ use crate::models::event::*;
 use crate::models::announcement::*;
 use crate::models::notification::*;
 use crate::models::rsvp::*;
-use crate::models::media::MediaItem;
+use crate::models::media::{AdminMediaListQuery, MediaItem, MediaItemView};
 
 // ═══════════════════════════════════════════════
 // ADMIN — Guest Management
@@ -605,6 +605,59 @@ pub async fn admin_send_notification(
 // ADMIN — Media Moderation
 // ═══════════════════════════════════════════════
 
+/// GET /api/admin/media — all media (paginated); use `pending_only=true` for moderation queue only
+#[get("/api/admin/media")]
+pub async fn admin_list_media(
+    req: HttpRequest,
+    pool: web::Data<PgPool>,
+    query: web::Query<AdminMediaListQuery>,
+) -> HttpResponse {
+    if let Err(_) = extract_admin(&req, &pool).await {
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "success": false, "error": "Admin access required"
+        }));
+    }
+
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = query.per_page.unwrap_or(50).min(100);
+    let offset = ((page - 1) * per_page) as i64;
+
+    let mut sql = String::from(
+        "SELECT m.id, m.uploaded_by, g.name as uploader_name, m.event_id, e.title as event_title, \
+         m.media_type, m.title, m.description, m.file_url, m.thumbnail_url, m.file_size_bytes, \
+         m.duration_secs, m.mime_type, m.is_approved, m.is_featured, m.like_count, m.view_count, m.created_at \
+         FROM media_items m \
+         LEFT JOIN guests g ON g.id = m.uploaded_by \
+         LEFT JOIN ceremony_events e ON e.id = m.event_id \
+         WHERE 1=1",
+    );
+    if query.pending_only == Some(true) {
+        sql.push_str(" AND m.is_approved = FALSE");
+    }
+    sql.push_str(&format!(
+        " ORDER BY m.created_at DESC LIMIT {} OFFSET {}",
+        per_page, offset
+    ));
+
+    match sqlx::query_as::<_, MediaItemView>(&sql)
+        .fetch_all(pool.get_ref())
+        .await
+    {
+        Ok(items) => HttpResponse::Ok().json(serde_json::json!({
+            "success": true,
+            "page": page,
+            "per_page": per_page,
+            "data": items,
+        })),
+        Err(e) => {
+            tracing::error!("Failed to list admin media: {e}");
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false, "error": "Failed to load media"
+            }))
+        }
+    }
+}
+
 /// GET /api/admin/media/pending — media awaiting approval
 #[get("/api/admin/media/pending")]
 pub async fn admin_pending_media(
@@ -660,6 +713,37 @@ pub async fn admin_patch_media(
     if let Some(featured) = body.get("is_featured").and_then(|v| v.as_bool()) {
         let _ = sqlx::query("UPDATE media_items SET is_featured = $1 WHERE id = $2")
             .bind(featured).bind(media_id).execute(pool.get_ref()).await;
+    }
+
+    if let Some(title) = body.get("title").and_then(|v| v.as_str()) {
+        let _ = sqlx::query("UPDATE media_items SET title = $1 WHERE id = $2")
+            .bind(title)
+            .bind(media_id)
+            .execute(pool.get_ref())
+            .await;
+    }
+
+    if let Some(description) = body.get("description").and_then(|v| v.as_str()) {
+        let _ = sqlx::query("UPDATE media_items SET description = $1 WHERE id = $2")
+            .bind(description)
+            .bind(media_id)
+            .execute(pool.get_ref())
+            .await;
+    }
+
+    if let Some(ev) = body.get("event_id") {
+        if ev.is_null() {
+            let _ = sqlx::query("UPDATE media_items SET event_id = NULL WHERE id = $1")
+                .bind(media_id)
+                .execute(pool.get_ref())
+                .await;
+        } else if let Some(eid) = ev.as_i64() {
+            let _ = sqlx::query("UPDATE media_items SET event_id = $1 WHERE id = $2")
+                .bind(eid as i32)
+                .bind(media_id)
+                .execute(pool.get_ref())
+                .await;
+        }
     }
 
     HttpResponse::Ok().json(serde_json::json!({ "success": true }))
