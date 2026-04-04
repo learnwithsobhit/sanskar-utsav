@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../config/routes.dart';
 import '../config/theme.dart';
 import '../services/auth_service.dart';
 
@@ -117,7 +118,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
-                  onPressed: () => Navigator.pushNamed(context, '/admin'),
+                  onPressed: () => Navigator.pushNamed(context, AppRoutes.adminDashboard),
                   icon: const Icon(Icons.admin_panel_settings),
                   label: const Text('Admin Dashboard'),
                   style: OutlinedButton.styleFrom(

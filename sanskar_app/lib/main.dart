@@ -21,7 +21,9 @@ import 'screens/chat_list_screen.dart';
 import 'screens/chat_conversation_screen.dart';
 import 'screens/media_upload_screen.dart';
 import 'screens/media_viewer_screen.dart';
+import 'config/routes.dart';
 import 'models/media_item.dart';
+import 'screens/admin/admin_entry_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -84,6 +86,8 @@ class SanskarUtsavApp extends StatelessWidget {
           case '/media/view':
             final item = settings.arguments as MediaItem;
             return _fade(MediaViewerScreen(item: item));
+          case AppRoutes.adminDashboard:
+            return _slide(const AdminEntryScreen());
           default:
             return _fade(const SplashScreen());
         }

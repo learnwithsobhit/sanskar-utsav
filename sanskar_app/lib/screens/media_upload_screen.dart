@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
+import 'dart:convert';
 import '../config/theme.dart';
 import '../services/api_service.dart';
 import '../config/api_config.dart';
@@ -115,61 +116,40 @@ class _MediaUploadScreenState extends State<MediaUploadScreen> {
     try {
       final ext = _fileExtension(_pickedFile!);
       final mime = _mimeFromExt(ext);
-
-      // Upload via backend proxy (avoids CORS issues with S3/MinIO)
-      setState(() => _progress = 0.2);
       final fileBytes = await _pickedFile!.readAsBytes();
       final fileSize = fileBytes.length;
-
-      setState(() => _progress = 0.4);
-
-      // Build multipart request
-      final uri = Uri.parse('${ApiConfig.apiUrl}/media/upload');
-      final request = http.MultipartRequest('POST', uri);
-
-      // Add auth token
-      final token = await ApiService.getToken();
-      if (token != null) {
-        request.headers['Authorization'] = 'Bearer $token';
-      }
-
-      // Add file
-      request.files.add(http.MultipartFile.fromBytes(
-        'file',
-        fileBytes,
-        filename: '${DateTime.now().millisecondsSinceEpoch}.$ext',
-        contentType: _parseMediaType(mime),
-      ));
-
-      // Add metadata fields
-      request.fields['media_type'] = _mediaType;
-      if (_title.isNotEmpty) request.fields['title'] = _title;
-      if (_description.isNotEmpty) request.fields['description'] = _description;
-      if (_eventId != null) request.fields['event_id'] = _eventId.toString();
-
-      setState(() => _progress = 0.6);
-
-      final streamedResponse = await request.send();
-      final responseBody = await streamedResponse.stream.bytesToString();
-
-      setState(() => _progress = 0.9);
-
-      if (streamedResponse.statusCode == 201) {
-        setState(() => _progress = 1.0);
+      final uploaded = await _uploadViaPresigned(fileBytes, fileSize, ext, mime);
+      if (!uploaded) {
+        debugPrint('Upload path: presigned failed, falling back to proxy /api/media/upload');
+        final proxyUploaded = await _uploadViaProxy(fileBytes, ext, mime);
+        if (!proxyUploaded) {
+          setState(() {
+            _error = 'Upload failed';
+            _uploading = false;
+          });
+          return;
+        }
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('✅ Memory shared successfully!'),
-              backgroundColor: SanskarTheme.lotusGreen,
+              content: Text('Uploaded via fallback proxy path'),
+              backgroundColor: Colors.orange,
             ),
           );
-          Navigator.pop(context, true);
         }
       } else {
-        setState(() {
-          _error = 'Upload failed (${streamedResponse.statusCode})';
-          _uploading = false;
-        });
+        debugPrint('Upload path: presigned S3 + /api/media finalize');
+      }
+
+      setState(() => _progress = 1.0);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ Memory shared successfully!'),
+            backgroundColor: SanskarTheme.lotusGreen,
+          ),
+        );
+        Navigator.pop(context, true);
       }
     } catch (e) {
       setState(() {
@@ -177,6 +157,110 @@ class _MediaUploadScreenState extends State<MediaUploadScreen> {
         _uploading = false;
       });
     }
+  }
+
+  Future<bool> _uploadViaPresigned(List<int> fileBytes, int fileSize, String ext, String mime) async {
+    final token = await ApiService.getToken();
+    if (token == null) return false;
+
+    setState(() => _progress = 0.2);
+
+    final presignResp = await http.post(
+      Uri.parse(ApiConfig.mediaPresign),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
+      body: jsonEncode({
+        'file_ext': ext,
+        'content_type': mime,
+        'prefix': _mediaType == 'video'
+            ? 'videos'
+            : _mediaType == 'audio'
+                ? 'audio'
+                : 'photos',
+      }),
+    );
+
+    if (presignResp.statusCode != 200) return false;
+
+    final presignBody = jsonDecode(presignResp.body) as Map<String, dynamic>;
+    if (presignBody['success'] != true || presignBody['upload_url'] == null || presignBody['public_url'] == null) {
+      debugPrint('Presign response invalid: ${presignResp.body}');
+      return false;
+    }
+
+    final uploadUrl = presignBody['upload_url'] as String;
+    final publicUrl = presignBody['public_url'] as String;
+
+    setState(() => _progress = 0.5);
+
+    final putResp = await http.put(
+      Uri.parse(uploadUrl),
+      headers: {'Content-Type': mime},
+      body: fileBytes,
+    );
+
+    if (putResp.statusCode < 200 || putResp.statusCode >= 300) {
+      debugPrint('Presigned PUT failed: ${putResp.statusCode}');
+      return false;
+    }
+
+    setState(() => _progress = 0.8);
+
+    final createResp = await http.post(
+      Uri.parse(ApiConfig.media),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer $token',
+      },
+      body: jsonEncode({
+        'event_id': _eventId,
+        'media_type': _mediaType,
+        'title': _title.isEmpty ? null : _title,
+        'description': _description.isEmpty ? null : _description,
+        'file_url': publicUrl,
+        'thumbnail_url': null,
+        'file_size_bytes': fileSize,
+        'duration_secs': 0,
+        'mime_type': mime,
+      }),
+    );
+
+    final ok = createResp.statusCode == 201;
+    if (!ok) {
+      debugPrint('Finalize /api/media failed: ${createResp.statusCode} ${createResp.body}');
+    }
+    return ok;
+  }
+
+  Future<bool> _uploadViaProxy(List<int> fileBytes, String ext, String mime) async {
+    setState(() => _progress = 0.4);
+
+    final uri = Uri.parse('${ApiConfig.apiUrl}/media/upload');
+    final request = http.MultipartRequest('POST', uri);
+
+    final token = await ApiService.getToken();
+    if (token != null) {
+      request.headers['Authorization'] = 'Bearer $token';
+    }
+
+    request.files.add(http.MultipartFile.fromBytes(
+      'file',
+      fileBytes,
+      filename: '${DateTime.now().millisecondsSinceEpoch}.$ext',
+      contentType: _parseMediaType(mime),
+    ));
+
+    request.fields['media_type'] = _mediaType;
+    if (_title.isNotEmpty) request.fields['title'] = _title;
+    if (_description.isNotEmpty) request.fields['description'] = _description;
+    if (_eventId != null) request.fields['event_id'] = _eventId.toString();
+
+    setState(() => _progress = 0.7);
+    final streamedResponse = await request.send();
+    await streamedResponse.stream.bytesToString();
+    return streamedResponse.statusCode == 201;
   }
 
   /// Parse a MIME type string into a MediaType for multipart upload.

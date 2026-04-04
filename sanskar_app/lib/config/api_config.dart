@@ -64,4 +64,8 @@ class ApiConfig {
   static String get adminNotify => '$apiUrl/admin/notify';
   static String get adminPendingMedia => '$apiUrl/admin/media/pending';
   static String adminMediaUpdate(int id) => '$apiUrl/admin/media/$id';
+
+  static String get adminChatBroadcast => '$apiUrl/admin/chat/broadcast';
+  static String get adminChatEventGroup => '$apiUrl/admin/chat/event-group';
+  static String get adminChatEnrollAll => '$apiUrl/admin/chat/enroll-all';
 }
