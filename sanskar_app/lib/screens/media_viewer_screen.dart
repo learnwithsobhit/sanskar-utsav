@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import '../config/theme.dart';
@@ -16,9 +17,6 @@ class MediaViewerScreen extends StatefulWidget {
 }
 
 class _MediaViewerScreenState extends State<MediaViewerScreen> {
-  /// Require this much data ahead of the playhead before starting (reduces stutter).
-  static const Duration _kMinBufferAhead = Duration(seconds: 2);
-
   late MediaItem _item;
   bool _liked = false;
   List<dynamic> _comments = [];
@@ -34,6 +32,8 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
   bool _playRequested = false;
   bool _hideThumbnailOverlay = false;
   bool _showBufferingMessage = false;
+  /// Set when initialize() fails or the browser reports a media error (codec/CORS/network).
+  String? _videoLoadError;
 
   @override
   void initState() {
@@ -49,8 +49,12 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
   bool _hasAdequateBuffer(VideoPlayerValue v) {
     if (!v.isInitialized) return false;
     if (v.duration == Duration.zero) return true;
-    final need = v.position + _kMinBufferAhead;
+    // On web, buffered TimeRanges are often empty until after play() begins; requiring
+    // several seconds ahead prevents play() from ever running on mobile Safari/Chrome.
+    final ahead = kIsWeb ? Duration.zero : const Duration(seconds: 2);
+    final need = v.position + ahead;
     if (need >= v.duration) return true;
+    if (kIsWeb && v.buffered.isEmpty) return true;
     for (final range in v.buffered) {
       if (range.end >= need) return true;
     }
@@ -61,6 +65,18 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
     final c = _videoController;
     if (c == null || !mounted) return;
     final v = c.value;
+
+    if (v.hasError) {
+      final msg = v.errorDescription ?? 'Playback failed';
+      if (_videoLoadError != msg) {
+        setState(() {
+          _videoLoadError = msg;
+          _playRequested = false;
+          _showBufferingMessage = false;
+        });
+      }
+      return;
+    }
 
     var playTriggered = false;
     if (_videoInitialized && _playRequested && !v.isPlaying && _hasAdequateBuffer(v)) {
@@ -103,6 +119,12 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
       _videoListener();
     } catch (e) {
       debugPrint('Video init error: $e');
+      if (mounted) {
+        setState(() {
+          _videoLoadError =
+              'Could not open this video. On phones, use MP4 with H.264/AAC, check your connection, and ensure storage (S3) allows playback from this site (CORS).';
+        });
+      }
     }
   }
 
@@ -341,6 +363,26 @@ class _MediaViewerScreenState extends State<MediaViewerScreen> {
     if (_item.fileUrl.isEmpty) {
       return const Center(
         child: Text('No video URL', style: TextStyle(color: Colors.white54, fontSize: 14)),
+      );
+    }
+
+    if (_videoLoadError != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.error_outline, color: Colors.white54, size: 48),
+              const SizedBox(height: 16),
+              Text(
+                _videoLoadError!,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white.withAlpha(200), fontSize: 14, height: 1.4),
+              ),
+            ],
+          ),
+        ),
       );
     }
 
