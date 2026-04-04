@@ -151,6 +151,7 @@ async fn main() -> std::io::Result<()> {
             .service(routes::admin_routes::admin_list_media)
             .service(routes::admin_routes::admin_pending_media)
             .service(routes::admin_routes::admin_patch_media)
+            .service(routes::admin_routes::admin_delete_media)
             // Admin Chat
             .service(routes::admin_routes::admin_broadcast_message)
             .service(routes::admin_routes::admin_create_event_group)

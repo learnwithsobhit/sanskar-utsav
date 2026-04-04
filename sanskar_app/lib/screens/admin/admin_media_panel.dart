@@ -62,6 +62,40 @@ class _AdminMediaPanelState extends State<AdminMediaPanel> {
     }
   }
 
+  Future<void> _deleteMedia(int id) async {
+    final result = await ApiService.delete(ApiConfig.adminMediaUpdate(id));
+    if (!mounted) return;
+    if (result['success'] == true) {
+      _snack('Media removed', error: false);
+      await _load();
+    } else {
+      _snack(result['error']?.toString() ?? 'Delete failed');
+    }
+  }
+
+  Future<void> _confirmDelete(MediaItem m) async {
+    final label = m.title.isEmpty ? '${m.mediaType} (ID ${m.id})' : m.title;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove media?'),
+        content: Text(
+          'This permanently deletes the item and its likes/comments. '
+          'File storage may still contain the file.\n\n“$label”',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: SanskarTheme.vermillion),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && mounted) await _deleteMedia(m.id);
+  }
+
   Future<void> _showEditSheet(MediaItem m) async {
     final titleCtrl = TextEditingController(text: m.title);
     final descCtrl = TextEditingController(text: m.description);
@@ -299,9 +333,14 @@ class _AdminMediaPanelState extends State<AdminMediaPanel> {
                                   PopupMenuButton<String>(
                                     onSelected: (v) {
                                       if (v == 'edit') _showEditSheet(m);
+                                      if (v == 'delete') _confirmDelete(m);
                                     },
-                                    itemBuilder: (_) => const [
-                                      PopupMenuItem(value: 'edit', child: Text('Edit details')),
+                                    itemBuilder: (_) => [
+                                      const PopupMenuItem(value: 'edit', child: Text('Edit details')),
+                                      PopupMenuItem(
+                                        value: 'delete',
+                                        child: Text('Delete', style: TextStyle(color: SanskarTheme.vermillion)),
+                                      ),
                                     ],
                                   ),
                                 ],
@@ -335,6 +374,11 @@ class _AdminMediaPanelState extends State<AdminMediaPanel> {
                                     onPressed: () => _showEditSheet(m),
                                     icon: const Icon(Icons.edit_outlined, size: 18),
                                     label: const Text('Edit'),
+                                  ),
+                                  TextButton.icon(
+                                    onPressed: () => _confirmDelete(m),
+                                    icon: Icon(Icons.delete_outline, size: 18, color: SanskarTheme.vermillion),
+                                    label: Text('Remove', style: TextStyle(color: SanskarTheme.vermillion)),
                                   ),
                                 ],
                               ),

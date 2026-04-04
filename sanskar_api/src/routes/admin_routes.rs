@@ -749,6 +749,41 @@ pub async fn admin_patch_media(
     HttpResponse::Ok().json(serde_json::json!({ "success": true }))
 }
 
+/// DELETE /api/admin/media/{id} — remove media (cascades likes/comments)
+#[delete("/api/admin/media/{id}")]
+pub async fn admin_delete_media(
+    req: HttpRequest,
+    pool: web::Data<PgPool>,
+    path: web::Path<i32>,
+) -> HttpResponse {
+    if let Err(_) = extract_admin(&req, &pool).await {
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "success": false, "error": "Admin access required"
+        }));
+    }
+
+    let media_id = path.into_inner();
+
+    match sqlx::query("DELETE FROM media_items WHERE id = $1")
+        .bind(media_id)
+        .execute(pool.get_ref())
+        .await
+    {
+        Ok(r) if r.rows_affected() > 0 => {
+            HttpResponse::Ok().json(serde_json::json!({ "success": true }))
+        }
+        Ok(_) => HttpResponse::NotFound().json(serde_json::json!({
+            "success": false, "error": "Media not found"
+        })),
+        Err(e) => {
+            tracing::error!("Failed to delete media {media_id}: {e}");
+            HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false, "error": "Failed to delete media"
+            }))
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════
 // ADMIN — Group Chat Management
 // ═══════════════════════════════════════════════
