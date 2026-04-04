@@ -3,6 +3,13 @@ import '../config/api_config.dart';
 import '../models/guest.dart';
 import 'api_service.dart';
 
+/// Outcome of code/token login when server may require OTP instead.
+enum AuthLoginOutcome {
+  success,
+  otpRequired,
+  failed,
+}
+
 /// Manages authentication state.
 class AuthService extends ChangeNotifier {
   Guest? _currentGuest;
@@ -38,27 +45,135 @@ class AuthService extends ChangeNotifier {
     return false;
   }
 
-  /// Login with invite code.
-  Future<String?> login(String inviteCode) async {
+  /// Login with invite code (legacy). Returns outcome; [errorMessage] set when failed.
+  Future<(AuthLoginOutcome outcome, String? errorMessage)> loginWithInviteCode(
+    String inviteCode,
+  ) async {
     _isLoading = true;
     notifyListeners();
 
     final result = await ApiService.post(ApiConfig.authLogin, {
-      'invite_code': inviteCode,
+      'invite_code': inviteCode.trim(),
     });
 
     _isLoading = false;
+    notifyListeners();
 
     if (result['success'] == true) {
       await ApiService.saveToken(result['token']);
       _currentGuest = Guest.fromJson(result['guest']);
       _isLoggedIn = true;
       notifyListeners();
-      return null; // success
+      return (AuthLoginOutcome.success, null);
     }
 
+    if (result['otp_required'] == true) {
+      return (AuthLoginOutcome.otpRequired, null);
+    }
+
+    return (AuthLoginOutcome.failed, result['error']?.toString() ?? 'Login failed');
+  }
+
+  /// Redeem opaque invite token from link/QR.
+  Future<(AuthLoginOutcome outcome, String? errorMessage)> redeemInviteToken(
+    String inviteToken,
+  ) async {
+    _isLoading = true;
     notifyListeners();
-    return result['error'] ?? 'Login failed';
+
+    final result = await ApiService.post(ApiConfig.authRedeemInvite, {
+      'invite_token': inviteToken.trim(),
+    });
+
+    _isLoading = false;
+    notifyListeners();
+
+    if (result['success'] == true) {
+      await ApiService.saveToken(result['token']);
+      _currentGuest = Guest.fromJson(result['guest']);
+      _isLoggedIn = true;
+      notifyListeners();
+      return (AuthLoginOutcome.success, null);
+    }
+
+    if (result['otp_required'] == true) {
+      return (AuthLoginOutcome.otpRequired, null);
+    }
+
+    return (AuthLoginOutcome.failed, result['error']?.toString() ?? 'Invalid invite link');
+  }
+
+  /// Request SMS OTP (requires matching E.164 phone on the guest record).
+  Future<String?> requestOtp({
+    required String phoneE164,
+    String? inviteToken,
+    String? inviteCode,
+  }) async {
+    _isLoading = true;
+    notifyListeners();
+
+    final body = <String, dynamic>{'phone': phoneE164.trim()};
+    if (inviteToken != null && inviteToken.trim().isNotEmpty) {
+      body['invite_token'] = inviteToken.trim();
+    }
+    if (inviteCode != null && inviteCode.trim().isNotEmpty) {
+      body['invite_code'] = inviteCode.trim();
+    }
+
+    final result = await ApiService.post(ApiConfig.authOtpRequest, body);
+
+    _isLoading = false;
+    notifyListeners();
+
+    if (result['success'] == true) return null;
+    return result['error']?.toString() ?? 'Could not send code';
+  }
+
+  /// Verify OTP and open session.
+  Future<String?> verifyOtp({
+    required String phoneE164,
+    required String otp,
+    String? inviteToken,
+    String? inviteCode,
+  }) async {
+    _isLoading = true;
+    notifyListeners();
+
+    final body = <String, dynamic>{
+      'phone': phoneE164.trim(),
+      'otp': otp.trim(),
+    };
+    if (inviteToken != null && inviteToken.trim().isNotEmpty) {
+      body['invite_token'] = inviteToken.trim();
+    }
+    if (inviteCode != null && inviteCode.trim().isNotEmpty) {
+      body['invite_code'] = inviteCode.trim();
+    }
+
+    final result = await ApiService.post(ApiConfig.authOtpVerify, body);
+
+    _isLoading = false;
+    notifyListeners();
+
+    if (result['success'] == true) {
+      await ApiService.saveToken(result['token']);
+      _currentGuest = Guest.fromJson(result['guest']);
+      _isLoggedIn = true;
+      notifyListeners();
+      return null;
+    }
+
+    return result['error']?.toString() ?? 'Verification failed';
+  }
+
+  /// Backwards-compatible: invite code only.
+  Future<String?> login(String inviteCode) async {
+    final (outcome, err) = await loginWithInviteCode(inviteCode);
+    if (outcome == AuthLoginOutcome.success) return null;
+    if (outcome == AuthLoginOutcome.otpRequired) {
+      return 'OTP_REQUIRED';
+    }
+    return err;
   }
 
   /// Logout.

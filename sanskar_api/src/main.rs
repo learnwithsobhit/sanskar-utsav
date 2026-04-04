@@ -74,6 +74,8 @@ async fn main() -> std::io::Result<()> {
     let bind_addr = format!("0.0.0.0:{}", cfg.port);
     tracing::info!("🛕 Server running at http://{}", bind_addr);
 
+    let app_config = web::Data::new(cfg.clone());
+
     let redis_data = web::Data::new(redis);
     let nats_data = web::Data::new(nats);
     let s3_data = web::Data::new(s3_client);
@@ -91,6 +93,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .wrap(TracingLogger::default())
             .app_data(web::Data::new(pool.clone()))
+            .app_data(app_config.clone())
             .app_data(redis_data.clone())
             .app_data(nats_data.clone())
             .app_data(s3_data.clone())
@@ -99,7 +102,11 @@ async fn main() -> std::io::Result<()> {
             .service(routes::health::root)
             .service(routes::health::health)
             // Auth
+            .service(routes::auth_routes::invite_info)
+            .service(routes::auth_routes::redeem_invite)
             .service(routes::auth_routes::login)
+            .service(routes::auth_routes::otp_request)
+            .service(routes::auth_routes::otp_verify)
             .service(routes::auth_routes::me)
             .service(routes::auth_routes::logout)
             // Events
@@ -139,6 +146,8 @@ async fn main() -> std::io::Result<()> {
             // Admin
             .service(routes::admin_routes::admin_create_guest)
             .service(routes::admin_routes::admin_list_guests)
+            .service(routes::admin_routes::admin_revoke_guest)
+            .service(routes::admin_routes::admin_rotate_guest_invite)
             .service(routes::admin_routes::admin_update_guest)
             .service(routes::admin_routes::admin_create_event)
             .service(routes::admin_routes::admin_patch_event)

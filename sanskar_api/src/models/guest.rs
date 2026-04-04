@@ -26,6 +26,9 @@ pub struct Guest {
     pub accommodation_needed: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// SHA-256 hex of invite token (column appended by migration); never serialized to clients.
+    #[serde(default, skip_serializing)]
+    pub invite_token_hash: String,
 }
 
 /// Public-facing guest view (hides sensitive fields).
@@ -69,7 +72,34 @@ pub struct GuestSession {
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
-    pub invite_code: String,
+    #[serde(default)]
+    pub invite_code: Option<String>,
+    #[serde(default)]
+    pub invite_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RedeemInviteRequest {
+    pub invite_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OtpRequestBody {
+    #[serde(default)]
+    pub invite_token: Option<String>,
+    #[serde(default)]
+    pub invite_code: Option<String>,
+    pub phone: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OtpVerifyBody {
+    #[serde(default)]
+    pub invite_token: Option<String>,
+    #[serde(default)]
+    pub invite_code: Option<String>,
+    pub phone: String,
+    pub otp: String,
 }
 
 #[derive(Debug, Serialize)]

@@ -57,7 +57,8 @@ class SanskarUtsavApp extends StatelessWidget {
           case '/':
             return _fade(const SplashScreen());
           case '/login':
-            return _fade(const LoginScreen());
+            final inviteToken = settings.arguments as String?;
+            return _fade(LoginScreen(initialInviteToken: inviteToken));
           case '/home':
             return _fade(const MainShell());
           case '/schedule':

@@ -1,11 +1,16 @@
 use actix_web::{get, post, patch, delete, web, HttpRequest, HttpResponse};
 use sqlx::PgPool;
+use uuid::Uuid;
 
-use crate::auth::invite_code::generate_invite_code;
+use crate::auth::invite_code::{
+    generate_invite_code, generate_invite_raw_token, hash_token, invalidate_sessions_for_guest,
+};
 use crate::auth::middleware::extract_admin;
 use crate::broker::{NatsBroker, subjects};
 use crate::cache::RedisCache;
+use crate::config::AppConfig;
 use crate::services::cache_service;
+use crate::services::phone::normalize_e164_phone;
 use crate::models::guest::*;
 use crate::models::event::*;
 use crate::models::announcement::*;
@@ -17,44 +22,91 @@ use crate::models::media::{AdminMediaListQuery, MediaItem, MediaItemView};
 // ADMIN — Guest Management
 // ═══════════════════════════════════════════════
 
-/// POST /api/admin/guests — add a guest (auto-generates invite code)
+async fn count_active_admins(pool: &PgPool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*)::bigint FROM guests WHERE is_admin = true \
+         AND status NOT IN ('revoked', 'suspended')",
+    )
+    .fetch_one(pool)
+    .await
+}
+
+async fn admin_audit(
+    pool: &PgPool,
+    admin_id: Uuid,
+    action: &str,
+    target_guest_id: Option<Uuid>,
+    meta: serde_json::Value,
+) {
+    let _ = sqlx::query(
+        "INSERT INTO admin_audit_log (admin_guest_id, action, target_guest_id, meta) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(admin_id)
+    .bind(action)
+    .bind(target_guest_id)
+    .bind(meta)
+    .execute(pool)
+    .await;
+}
+
+/// POST /api/admin/guests — add a guest (E.164 phone required; invite link + code).
 #[post("/api/admin/guests")]
 pub async fn admin_create_guest(
     req: HttpRequest,
+    cfg: web::Data<AppConfig>,
     pool: web::Data<PgPool>,
     cache: web::Data<RedisCache>,
     body: web::Json<AdminCreateGuestRequest>,
 ) -> HttpResponse {
-    if let Err(_) = extract_admin(&req, &pool).await {
-        return HttpResponse::Forbidden().json(serde_json::json!({
-            "success": false, "error": "Admin access required"
-        }));
-    }
+    let admin = match extract_admin(&req, &pool).await {
+        Ok(g) => g,
+        Err(_) => {
+            return HttpResponse::Forbidden().json(serde_json::json!({
+                "success": false, "error": "Admin access required"
+            }));
+        }
+    };
+
+    let phone = match normalize_e164_phone(body.phone.as_deref().unwrap_or("")) {
+        Some(p) => p,
+        None => {
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "success": false,
+                "error": "Valid E.164 phone is required (e.g. +9198xxxxxxx).",
+            }));
+        }
+    };
 
     let code = generate_invite_code(&body.name);
+    let raw_invite = generate_invite_raw_token();
+    let invite_hash = hash_token(&raw_invite);
+    let base = cfg.web_app_base_url.trim_end_matches('/');
+    let invite_url = format!("{base}/join?t={raw_invite}");
 
     match sqlx::query_as::<_, Guest>(
-        "INSERT INTO guests (invite_code, name, phone, email, relation, family_side, city, is_admin) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *"
+        "INSERT INTO guests (invite_code, name, phone, email, relation, family_side, city, is_admin, invite_token_hash) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *",
     )
     .bind(&code)
     .bind(&body.name)
-    .bind(body.phone.as_deref().unwrap_or(""))
+    .bind(&phone)
     .bind(body.email.as_deref().unwrap_or(""))
     .bind(body.relation.as_deref().unwrap_or(""))
     .bind(body.family_side.as_deref().unwrap_or("both"))
     .bind(body.city.as_deref().unwrap_or(""))
     .bind(body.is_admin.unwrap_or(false))
+    .bind(&invite_hash)
     .fetch_one(pool.get_ref())
     .await
     {
         Ok(guest) => {
-            // Auto-enroll in Sanskar Utsav Family group chat
             let family_group_id: uuid::Uuid = "00000000-0000-0000-0000-000000000001"
-                .parse().unwrap();
+                .parse()
+                .unwrap();
             let _ = sqlx::query(
                 "INSERT INTO chat_room_members (room_id, guest_id, role) \
-                 VALUES ($1, $2, 'member') ON CONFLICT (room_id, guest_id) DO NOTHING"
+                 VALUES ($1, $2, 'member') ON CONFLICT (room_id, guest_id) DO NOTHING",
             )
             .bind(family_group_id)
             .bind(guest.id)
@@ -62,14 +114,31 @@ pub async fn admin_create_guest(
             .await;
 
             cache_service::invalidate_guest_directory(&cache).await;
+            admin_audit(
+                pool.get_ref(),
+                admin.id,
+                "guest.create",
+                Some(guest.id),
+                serde_json::json!({ "invite_code": code }),
+            )
+            .await;
 
             HttpResponse::Created().json(serde_json::json!({
                 "success": true,
                 "invite_code": code,
+                "invite_token": raw_invite,
+                "invite_url": invite_url,
                 "guest": guest,
             }))
-        },
+        }
         Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("idx_guests_phone_unique_active") || msg.contains("duplicate key") {
+                return HttpResponse::Conflict().json(serde_json::json!({
+                    "success": false,
+                    "error": "Another active guest already uses this phone number.",
+                }));
+            }
             tracing::error!("Failed to create guest: {e}");
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "success": false, "error": "Failed to create guest"
@@ -117,11 +186,14 @@ pub async fn admin_update_guest(
     path: web::Path<uuid::Uuid>,
     body: web::Json<AdminUpdateGuestRequest>,
 ) -> HttpResponse {
-    if let Err(_) = extract_admin(&req, &pool).await {
-        return HttpResponse::Forbidden().json(serde_json::json!({
-            "success": false, "error": "Admin access required"
-        }));
-    }
+    let admin = match extract_admin(&req, &pool).await {
+        Ok(g) => g,
+        Err(_) => {
+            return HttpResponse::Forbidden().json(serde_json::json!({
+                "success": false, "error": "Admin access required"
+            }));
+        }
+    };
 
     let guest_id = path.into_inner();
 
@@ -143,13 +215,71 @@ pub async fn admin_update_guest(
         }
     };
 
+    let new_status = body
+        .status
+        .as_deref()
+        .unwrap_or(current.status.as_str());
+    let new_is_admin = body.is_admin.unwrap_or(current.is_admin);
+
+    if new_status == "revoked" || new_status == "suspended" {
+        if current.is_admin {
+            match count_active_admins(pool.get_ref()).await {
+                Ok(n) if n <= 1 => {
+                    return HttpResponse::BadRequest().json(serde_json::json!({
+                        "success": false,
+                        "error": "Cannot revoke or suspend the last admin.",
+                    }));
+                }
+                Err(e) => {
+                    tracing::error!("count admins: {e}");
+                    return HttpResponse::InternalServerError().json(serde_json::json!({
+                        "success": false, "error": "Database error",
+                    }));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if !new_is_admin && current.is_admin {
+        match count_active_admins(pool.get_ref()).await {
+            Ok(n) if n <= 1 => {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "success": false,
+                    "error": "Cannot remove the last admin flag.",
+                }));
+            }
+            Err(e) => {
+                tracing::error!("count admins: {e}");
+                return HttpResponse::InternalServerError().json(serde_json::json!({
+                    "success": false, "error": "Database error",
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    let phone_for_db = if let Some(ref p) = body.phone {
+        match normalize_e164_phone(p) {
+            Some(n) => n,
+            None => {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "success": false,
+                    "error": "Invalid E.164 phone format.",
+                }));
+            }
+        }
+    } else {
+        current.phone.clone()
+    };
+
     match sqlx::query_as::<_, Guest>(
         "UPDATE guests SET name=$1, phone=$2, email=$3, relation=$4, family_side=$5, \
          guest_count=$6, status=$7, dietary_pref=$8, city=$9, accommodation_needed=$10, \
          is_admin=$11, updated_at=NOW() WHERE id=$12 RETURNING *"
     )
     .bind(body.name.as_deref().unwrap_or(&current.name))
-    .bind(body.phone.as_deref().unwrap_or(&current.phone))
+    .bind(&phone_for_db)
     .bind(body.email.as_deref().unwrap_or(&current.email))
     .bind(body.relation.as_deref().unwrap_or(&current.relation))
     .bind(body.family_side.as_deref().unwrap_or(&current.family_side))
@@ -158,25 +288,222 @@ pub async fn admin_update_guest(
     .bind(body.dietary_pref.as_deref().unwrap_or(&current.dietary_pref))
     .bind(body.city.as_deref().unwrap_or(&current.city))
     .bind(body.accommodation_needed.unwrap_or(current.accommodation_needed))
-    .bind(body.is_admin.unwrap_or(current.is_admin))
+    .bind(new_is_admin)
     .bind(guest_id)
     .fetch_one(pool.get_ref())
     .await
     {
         Ok(updated) => {
+            if (new_status == "revoked" || new_status == "suspended")
+                && !matches!(current.status.as_str(), "revoked" | "suspended")
+            {
+                let _ = invalidate_sessions_for_guest(pool.get_ref(), guest_id).await;
+                let _ = sqlx::query("DELETE FROM chat_room_members WHERE guest_id = $1")
+                    .bind(guest_id)
+                    .execute(pool.get_ref())
+                    .await;
+            }
             cache_service::invalidate_guest_directory(&cache).await;
+            admin_audit(
+                pool.get_ref(),
+                admin.id,
+                "guest.update",
+                Some(guest_id),
+                serde_json::json!({ "status": new_status }),
+            )
+            .await;
             HttpResponse::Ok().json(serde_json::json!({
                 "success": true,
                 "guest": updated,
             }))
         }
         Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("idx_guests_phone_unique_active") || msg.contains("duplicate key") {
+                return HttpResponse::Conflict().json(serde_json::json!({
+                    "success": false,
+                    "error": "Another active guest already uses this phone number.",
+                }));
+            }
             tracing::error!("Failed to update guest: {e}");
             HttpResponse::InternalServerError().json(serde_json::json!({
                 "success": false, "error": "Failed to update guest"
             }))
         }
     }
+}
+
+/// POST /api/admin/guests/{id}/revoke — soft revoke, kill sessions, drop chat memberships.
+#[post("/api/admin/guests/{id}/revoke")]
+pub async fn admin_revoke_guest(
+    req: HttpRequest,
+    pool: web::Data<PgPool>,
+    cache: web::Data<RedisCache>,
+    path: web::Path<uuid::Uuid>,
+) -> HttpResponse {
+    let admin = match extract_admin(&req, &pool).await {
+        Ok(g) => g,
+        Err(_) => {
+            return HttpResponse::Forbidden().json(serde_json::json!({
+                "success": false, "error": "Admin access required"
+            }));
+        }
+    };
+
+    let guest_id = path.into_inner();
+
+    let current = match sqlx::query_as::<_, Guest>("SELECT * FROM guests WHERE id = $1")
+        .bind(guest_id)
+        .fetch_optional(pool.get_ref())
+        .await
+    {
+        Ok(Some(g)) => g,
+        Ok(None) => {
+            return HttpResponse::NotFound().json(serde_json::json!({
+                "success": false, "error": "Guest not found",
+            }));
+        }
+        Err(e) => {
+            tracing::error!("DB error: {e}");
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false, "error": "Database error",
+            }));
+        }
+    };
+
+    if matches!(current.status.as_str(), "revoked" | "suspended") {
+        return HttpResponse::Ok().json(serde_json::json!({
+            "success": true,
+            "guest": current,
+            "message": "Already revoked or suspended.",
+        }));
+    }
+
+    if current.is_admin {
+        match count_active_admins(pool.get_ref()).await {
+            Ok(n) if n <= 1 => {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "success": false,
+                    "error": "Cannot revoke the last admin.",
+                }));
+            }
+            Err(e) => {
+                tracing::error!("count admins: {e}");
+                return HttpResponse::InternalServerError().json(serde_json::json!({
+                    "success": false, "error": "Database error",
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    let updated = match sqlx::query_as::<_, Guest>(
+        "UPDATE guests SET status = 'revoked', updated_at = NOW() WHERE id = $1 RETURNING *",
+    )
+    .bind(guest_id)
+    .fetch_one(pool.get_ref())
+    .await
+    {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!("revoke guest: {e}");
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false, "error": "Failed to revoke guest",
+            }));
+        }
+    };
+
+    let _ = invalidate_sessions_for_guest(pool.get_ref(), guest_id).await;
+    let _ = sqlx::query("DELETE FROM chat_room_members WHERE guest_id = $1")
+        .bind(guest_id)
+        .execute(pool.get_ref())
+        .await;
+
+    cache_service::invalidate_guest_directory(&cache).await;
+    admin_audit(
+        pool.get_ref(),
+        admin.id,
+        "guest.revoke",
+        Some(guest_id),
+        serde_json::json!({}),
+    )
+    .await;
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "guest": updated,
+    }))
+}
+
+/// POST /api/admin/guests/{id}/rotate-invite — new opaque token; old invite links stop working.
+#[post("/api/admin/guests/{id}/rotate-invite")]
+pub async fn admin_rotate_guest_invite(
+    req: HttpRequest,
+    cfg: web::Data<AppConfig>,
+    pool: web::Data<PgPool>,
+    cache: web::Data<RedisCache>,
+    path: web::Path<uuid::Uuid>,
+) -> HttpResponse {
+    let admin = match extract_admin(&req, &pool).await {
+        Ok(g) => g,
+        Err(_) => {
+            return HttpResponse::Forbidden().json(serde_json::json!({
+                "success": false, "error": "Admin access required"
+            }));
+        }
+    };
+
+    let guest_id = path.into_inner();
+
+    let exists = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM guests WHERE id = $1)")
+        .bind(guest_id)
+        .fetch_one(pool.get_ref())
+        .await
+        .unwrap_or(false);
+    if !exists {
+        return HttpResponse::NotFound().json(serde_json::json!({
+            "success": false, "error": "Guest not found",
+        }));
+    }
+
+    let raw_invite = generate_invite_raw_token();
+    let invite_hash = hash_token(&raw_invite);
+    let base = cfg.web_app_base_url.trim_end_matches('/');
+    let invite_url = format!("{base}/join?t={raw_invite}");
+
+    let guest = match sqlx::query_as::<_, Guest>(
+        "UPDATE guests SET invite_token_hash = $1, updated_at = NOW() WHERE id = $2 RETURNING *",
+    )
+    .bind(&invite_hash)
+    .bind(guest_id)
+    .fetch_one(pool.get_ref())
+    .await
+    {
+        Ok(g) => g,
+        Err(e) => {
+            tracing::error!("rotate invite: {e}");
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "success": false, "error": "Failed to rotate invite",
+            }));
+        }
+    };
+
+    cache_service::invalidate_guest_directory(&cache).await;
+    admin_audit(
+        pool.get_ref(),
+        admin.id,
+        "guest.rotate_invite",
+        Some(guest_id),
+        serde_json::json!({}),
+    )
+    .await;
+
+    HttpResponse::Ok().json(serde_json::json!({
+        "success": true,
+        "invite_token": raw_invite,
+        "invite_url": invite_url,
+        "guest": guest,
+    }))
 }
 
 // ═══════════════════════════════════════════════

@@ -6,6 +6,7 @@ use crate::auth::middleware::extract_guest;
 use crate::cache::RedisCache;
 use crate::models::guest::{Guest, GuestPublicView, UpdateProfileRequest};
 use crate::services::cache_service;
+use crate::services::phone::normalize_e164_phone;
 
 /// GET /api/guests — public guest directory (Redis-cached)
 #[get("/api/guests")]
@@ -28,7 +29,7 @@ pub async fn list_guests(
     }
 
     match sqlx::query_as::<_, Guest>(
-        "SELECT * FROM guests WHERE status != 'declined' ORDER BY name"
+        "SELECT * FROM guests WHERE status NOT IN ('declined', 'revoked', 'suspended') ORDER BY name"
     )
     .fetch_all(pool.get_ref())
     .await
@@ -112,7 +113,19 @@ pub async fn update_profile(
     };
 
     let name = body.name.as_deref().unwrap_or(&guest.name);
-    let phone = body.phone.as_deref().unwrap_or(&guest.phone);
+    let phone = if let Some(ref p) = body.phone {
+        match normalize_e164_phone(p) {
+            Some(n) => n,
+            None => {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "success": false,
+                    "error": "Invalid E.164 phone format.",
+                }));
+            }
+        }
+    } else {
+        guest.phone.clone()
+    };
     let email = body.email.as_deref().unwrap_or(&guest.email);
     let dietary = body.dietary_pref.as_deref().unwrap_or(&guest.dietary_pref);
     let city = body.city.as_deref().unwrap_or(&guest.city);
@@ -124,7 +137,7 @@ pub async fn update_profile(
          accommodation_needed=$6, avatar_url=$7, updated_at=NOW() \
          WHERE id=$8 RETURNING *"
     )
-    .bind(name).bind(phone).bind(email).bind(dietary)
+    .bind(name).bind(&phone).bind(email).bind(dietary)
     .bind(city).bind(accom).bind(avatar).bind(guest.id)
     .fetch_one(pool.get_ref())
     .await

@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../config/api_config.dart';
 import '../../config/theme.dart';
@@ -63,6 +66,78 @@ class _AdminGuestsPanelState extends State<AdminGuestsPanel> {
     }).toList();
   }
 
+  String? _validateE164(String? v) {
+    final t = v?.trim() ?? '';
+    if (t.isEmpty) return 'Phone required (E.164, e.g. +9198xxxxxxx)';
+    if (!t.startsWith('+')) return 'Include country code with +';
+    if (t.length < 10) return 'Phone too short';
+    return null;
+  }
+
+  void _showInviteSheet({
+    required String inviteUrl,
+    required String inviteCode,
+    String? rawToken,
+  }) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.all(24),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Invite member', style: Theme.of(ctx).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              Text(
+                'Share the link or QR. The token is shown only here.',
+                style: TextStyle(color: Colors.grey.shade700, fontSize: 13),
+              ),
+              const SizedBox(height: 20),
+              Center(
+                child: QrImageView(
+                  data: inviteUrl,
+                  version: QrVersions.auto,
+                  size: 200,
+                  backgroundColor: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 16),
+              SelectableText(inviteUrl, style: const TextStyle(fontSize: 12)),
+              if (rawToken != null && rawToken.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Text('Token (backup)', style: TextStyle(color: Colors.grey.shade600, fontSize: 11)),
+                SelectableText(rawToken, style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
+              ],
+              const SizedBox(height: 8),
+              Text('Short code: $inviteCode', style: const TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 20),
+              FilledButton.icon(
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: inviteUrl));
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  _snack('Link copied', error: false);
+                },
+                icon: const Icon(Icons.copy),
+                label: const Text('Copy link'),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  await Share.share(inviteUrl, subject: 'Sanskar Utsav invite');
+                },
+                icon: const Icon(Icons.share_outlined),
+                label: const Text('Share'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _showCreateDialog() async {
     final nameCtrl = TextEditingController();
     final phoneCtrl = TextEditingController();
@@ -87,7 +162,10 @@ class _AdminGuestsPanelState extends State<AdminGuestsPanel> {
                 ),
                 TextField(
                   controller: phoneCtrl,
-                  decoration: const InputDecoration(labelText: 'Phone'),
+                  decoration: const InputDecoration(
+                    labelText: 'Phone (E.164) *',
+                    hintText: '+9198xxxxxxx',
+                  ),
                   keyboardType: TextInputType.phone,
                 ),
                 TextField(
@@ -134,10 +212,15 @@ class _AdminGuestsPanelState extends State<AdminGuestsPanel> {
       _snack('Name is required');
       return;
     }
+    final phoneErr = _validateE164(phoneCtrl.text);
+    if (phoneErr != null) {
+      _snack(phoneErr);
+      return;
+    }
 
     final result = await ApiService.post(ApiConfig.adminGuests, {
       'name': nameCtrl.text.trim(),
-      'phone': phoneCtrl.text.trim().isEmpty ? null : phoneCtrl.text.trim(),
+      'phone': phoneCtrl.text.trim(),
       'email': emailCtrl.text.trim().isEmpty ? null : emailCtrl.text.trim(),
       'relation': relationCtrl.text.trim().isEmpty ? null : relationCtrl.text.trim(),
       'family_side': familySide,
@@ -147,11 +230,71 @@ class _AdminGuestsPanelState extends State<AdminGuestsPanel> {
 
     if (!mounted) return;
     if (result['success'] == true) {
+      final url = result['invite_url']?.toString() ?? '';
       final code = result['invite_code']?.toString() ?? '';
-      _snack('Created. Invite code: $code', error: false);
+      final tok = result['invite_token']?.toString();
+      _snack('Guest created', error: false);
       await _load();
+      if (url.isNotEmpty) {
+        _showInviteSheet(inviteUrl: url, inviteCode: code, rawToken: tok);
+      }
     } else {
       _snack(result['error']?.toString() ?? 'Create failed');
+    }
+  }
+
+  Future<void> _confirmRevoke(Guest g) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Revoke member?'),
+        content: Text('${g.name} will be signed out and cannot return unless re-invited.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: SanskarTheme.vermillion),
+            child: const Text('Revoke'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final result = await ApiService.post(ApiConfig.adminGuestRevoke(g.id), {});
+    if (!mounted) return;
+    if (result['success'] == true) {
+      _snack('Member revoked', error: false);
+      await _load();
+    } else {
+      _snack(result['error']?.toString() ?? 'Revoke failed');
+    }
+  }
+
+  Future<void> _confirmRotateInvite(Guest g) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('New invite link?'),
+        content: const Text('Old invite links and QR codes will stop working. Current sessions stay signed in.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Rotate')),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    final result = await ApiService.post(ApiConfig.adminGuestRotateInvite(g.id), {});
+    if (!mounted) return;
+    if (result['success'] == true) {
+      final url = result['invite_url']?.toString() ?? '';
+      final tok = result['invite_token']?.toString();
+      _snack('Invite link updated', error: false);
+      await _load();
+      if (url.isNotEmpty) {
+        _showInviteSheet(inviteUrl: url, inviteCode: g.inviteCode, rawToken: tok);
+      }
+    } else {
+      _snack(result['error']?.toString() ?? 'Rotate failed');
     }
   }
 
@@ -188,7 +331,14 @@ class _AdminGuestsPanelState extends State<AdminGuestsPanel> {
                 Text('Invite: ${g.inviteCode}', style: const TextStyle(fontSize: 12)),
                 const SizedBox(height: 16),
                 TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Name')),
-                TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Phone')),
+                TextField(
+                  controller: phoneCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Phone (E.164)',
+                    hintText: '+9198xxxxxxx',
+                  ),
+                  keyboardType: TextInputType.phone,
+                ),
                 TextField(controller: emailCtrl, decoration: const InputDecoration(labelText: 'Email')),
                 TextField(controller: relationCtrl, decoration: const InputDecoration(labelText: 'Relation')),
                 TextField(controller: cityCtrl, decoration: const InputDecoration(labelText: 'City')),
@@ -205,6 +355,8 @@ class _AdminGuestsPanelState extends State<AdminGuestsPanel> {
                     DropdownMenuItem(value: 'confirmed', child: Text('confirmed')),
                     DropdownMenuItem(value: 'pending', child: Text('pending')),
                     DropdownMenuItem(value: 'declined', child: Text('declined')),
+                    DropdownMenuItem(value: 'suspended', child: Text('suspended')),
+                    DropdownMenuItem(value: 'revoked', child: Text('revoked')),
                   ],
                   onChanged: (v) => setLocal(() => status = v ?? status),
                 ),
@@ -241,6 +393,11 @@ class _AdminGuestsPanelState extends State<AdminGuestsPanel> {
                 const SizedBox(height: 16),
                 FilledButton(
                   onPressed: () async {
+                    final pErr = _validateE164(phoneCtrl.text);
+                    if (pErr != null) {
+                      _snack(pErr);
+                      return;
+                    }
                     final count = int.tryParse(guestCountCtrl.text.trim()) ?? g.guestCount;
                     final result = await ApiService.patch(
                       ApiConfig.adminGuestUpdate(g.id),
@@ -330,12 +487,43 @@ class _AdminGuestsPanelState extends State<AdminGuestsPanel> {
                   separatorBuilder: (_, __) => const Divider(height: 1),
                   itemBuilder: (context, i) {
                     final g = list[i];
+                    final revoked = g.status == 'revoked' || g.status == 'suspended';
                     return ListTile(
                       title: Text(g.name),
                       subtitle: Text('${g.inviteCode} · ${g.phone} · ${g.status}'),
-                      trailing: g.isAdmin
-                          ? const Chip(label: Text('Admin'), visualDensity: VisualDensity.compact)
-                          : null,
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (g.isAdmin)
+                            const Padding(
+                              padding: EdgeInsets.only(right: 4),
+                              child: Chip(label: Text('Admin'), visualDensity: VisualDensity.compact),
+                            ),
+                          PopupMenuButton<String>(
+                            icon: const Icon(Icons.more_vert),
+                            onSelected: (v) async {
+                              if (v == 'edit') _showEditSheet(g);
+                              if (v == 'revoke' && !revoked) _confirmRevoke(g);
+                              if (v == 'rotate' && !revoked) _confirmRotateInvite(g);
+                              if (v == 'copy') {
+                                await Clipboard.setData(ClipboardData(text: g.inviteCode));
+                                _snack('Code copied', error: false);
+                              }
+                            },
+                            itemBuilder: (ctx) => [
+                              const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                              const PopupMenuItem(value: 'copy', child: Text('Copy invite code')),
+                              if (!revoked)
+                                const PopupMenuItem(value: 'rotate', child: Text('New invite link / QR')),
+                              if (!revoked)
+                                PopupMenuItem(
+                                  value: 'revoke',
+                                  child: Text('Revoke', style: TextStyle(color: SanskarTheme.vermillion)),
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
                       onTap: () => _showEditSheet(g),
                     );
                   },

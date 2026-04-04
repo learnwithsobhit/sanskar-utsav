@@ -22,6 +22,10 @@ class ApiConfig {
 
   // Endpoints
   static String get authLogin => '$apiUrl/auth/login';
+  static String get authRedeemInvite => '$apiUrl/auth/redeem-invite';
+  static String get authInviteInfo => '$apiUrl/auth/invite-info';
+  static String get authOtpRequest => '$apiUrl/auth/otp/request';
+  static String get authOtpVerify => '$apiUrl/auth/otp/verify';
   static String get authMe => '$apiUrl/auth/me';
   static String get authLogout => '$apiUrl/auth/logout';
 
@@ -56,6 +60,8 @@ class ApiConfig {
   // Admin
   static String get adminGuests => '$apiUrl/admin/guests';
   static String adminGuestUpdate(String id) => '$apiUrl/admin/guests/$id';
+  static String adminGuestRevoke(String id) => '$apiUrl/admin/guests/$id/revoke';
+  static String adminGuestRotateInvite(String id) => '$apiUrl/admin/guests/$id/rotate-invite';
   static String get adminEvents => '$apiUrl/admin/events';
   static String adminEventUpdate(int id) => '$apiUrl/admin/events/$id';
   static String get adminAnnouncements => '$apiUrl/admin/announcements';
