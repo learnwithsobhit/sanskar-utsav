@@ -5,6 +5,7 @@ use crate::auth::invite_code::generate_invite_code;
 use crate::auth::middleware::extract_admin;
 use crate::broker::{NatsBroker, subjects};
 use crate::cache::RedisCache;
+use crate::services::cache_service;
 use crate::models::guest::*;
 use crate::models::event::*;
 use crate::models::announcement::*;
@@ -21,6 +22,7 @@ use crate::models::media::MediaItem;
 pub async fn admin_create_guest(
     req: HttpRequest,
     pool: web::Data<PgPool>,
+    cache: web::Data<RedisCache>,
     body: web::Json<AdminCreateGuestRequest>,
 ) -> HttpResponse {
     if let Err(_) = extract_admin(&req, &pool).await {
@@ -58,6 +60,8 @@ pub async fn admin_create_guest(
             .bind(guest.id)
             .execute(pool.get_ref())
             .await;
+
+            cache_service::invalidate_guest_directory(&cache).await;
 
             HttpResponse::Created().json(serde_json::json!({
                 "success": true,
@@ -109,6 +113,7 @@ pub async fn admin_list_guests(
 pub async fn admin_update_guest(
     req: HttpRequest,
     pool: web::Data<PgPool>,
+    cache: web::Data<RedisCache>,
     path: web::Path<uuid::Uuid>,
     body: web::Json<AdminUpdateGuestRequest>,
 ) -> HttpResponse {
@@ -158,10 +163,13 @@ pub async fn admin_update_guest(
     .fetch_one(pool.get_ref())
     .await
     {
-        Ok(updated) => HttpResponse::Ok().json(serde_json::json!({
-            "success": true,
-            "guest": updated,
-        })),
+        Ok(updated) => {
+            cache_service::invalidate_guest_directory(&cache).await;
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "guest": updated,
+            }))
+        }
         Err(e) => {
             tracing::error!("Failed to update guest: {e}");
             HttpResponse::InternalServerError().json(serde_json::json!({

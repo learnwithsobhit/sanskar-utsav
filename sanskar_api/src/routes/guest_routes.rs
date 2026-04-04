@@ -1,20 +1,30 @@
 use actix_web::{get, put, web, HttpRequest, HttpResponse};
 use sqlx::PgPool;
+use std::time::Duration;
 
 use crate::auth::middleware::extract_guest;
+use crate::cache::RedisCache;
 use crate::models::guest::{Guest, GuestPublicView, UpdateProfileRequest};
+use crate::services::cache_service;
 
-/// GET /api/guests — public guest directory
+/// GET /api/guests — public guest directory (Redis-cached)
 #[get("/api/guests")]
 pub async fn list_guests(
     req: HttpRequest,
     pool: web::Data<PgPool>,
+    cache: web::Data<RedisCache>,
 ) -> HttpResponse {
     // Must be authenticated
     if extract_guest(&req, &pool).await.is_err() {
         return HttpResponse::Unauthorized().json(serde_json::json!({
             "success": false, "error": "Not authenticated"
         }));
+    }
+
+    if let Some(cached) = cache.get(cache_service::GUESTS_DIRECTORY_KEY).await {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&cached) {
+            return HttpResponse::Ok().json(value);
+        }
     }
 
     match sqlx::query_as::<_, Guest>(
@@ -25,10 +35,16 @@ pub async fn list_guests(
     {
         Ok(guests) => {
             let public: Vec<GuestPublicView> = guests.into_iter().map(GuestPublicView::from).collect();
-            HttpResponse::Ok().json(serde_json::json!({
+            let body = serde_json::json!({
                 "success": true,
                 "data": public,
-            }))
+            });
+            if let Ok(json) = serde_json::to_string(&body) {
+                let _ = cache
+                    .set(cache_service::GUESTS_DIRECTORY_KEY, &json, Duration::from_secs(120))
+                    .await;
+            }
+            HttpResponse::Ok().json(body)
         }
         Err(e) => {
             tracing::error!("Failed to list guests: {e}");
@@ -85,6 +101,7 @@ pub async fn get_guest(
 pub async fn update_profile(
     req: HttpRequest,
     pool: web::Data<PgPool>,
+    cache: web::Data<RedisCache>,
     body: web::Json<UpdateProfileRequest>,
 ) -> HttpResponse {
     let guest = match extract_guest(&req, &pool).await {
@@ -112,10 +129,13 @@ pub async fn update_profile(
     .fetch_one(pool.get_ref())
     .await
     {
-        Ok(updated) => HttpResponse::Ok().json(serde_json::json!({
-            "success": true,
-            "guest": updated,
-        })),
+        Ok(updated) => {
+            cache_service::invalidate_guest_directory(&cache).await;
+            HttpResponse::Ok().json(serde_json::json!({
+                "success": true,
+                "guest": updated,
+            }))
+        }
         Err(e) => {
             tracing::error!("Failed to update profile: {e}");
             HttpResponse::InternalServerError().json(serde_json::json!({
