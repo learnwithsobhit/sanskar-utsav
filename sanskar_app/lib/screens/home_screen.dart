@@ -7,6 +7,50 @@ import '../config/api_config.dart';
 import '../models/event.dart';
 import '../models/announcement.dart';
 
+/// Parse API `event_date` as a local calendar day (avoids UTC midnight shifting "days left").
+DateTime? _parseEventDateLocal(String raw) {
+  final s = raw.trim();
+  if (s.length >= 10) {
+    final head = s.substring(0, 10);
+    final parts = head.split('-');
+    if (parts.length == 3) {
+      final y = int.tryParse(parts[0]);
+      final m = int.tryParse(parts[1]);
+      final d = int.tryParse(parts[2]);
+      if (y != null && m != null && d != null) {
+        return DateTime(y, m, d);
+      }
+    }
+  }
+  final dt = DateTime.tryParse(s);
+  if (dt == null) return null;
+  return DateTime(dt.year, dt.month, dt.day);
+}
+
+/// Countdown anchor: active event with highest [dayNumber] (main day of multi-day sanskar).
+CeremonyEvent? _countdownAnchorEvent(List<CeremonyEvent> events) {
+  final active = events.where((e) => e.isActive).toList();
+  if (active.isEmpty) return null;
+  CeremonyEvent best = active.first;
+  for (final e in active.skip(1)) {
+    if (e.dayNumber > best.dayNumber) {
+      best = e;
+    } else if (e.dayNumber == best.dayNumber) {
+      final de = _parseEventDateLocal(e.eventDate);
+      final db = _parseEventDateLocal(best.eventDate);
+      if (de != null && db != null && de.isAfter(db)) best = e;
+    }
+  }
+  return best;
+}
+
+int? _calendarDaysUntil(DateTime eventLocalDate) {
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final eventDay = DateTime(eventLocalDate.year, eventLocalDate.month, eventLocalDate.day);
+  return eventDay.difference(today).inDays;
+}
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -53,14 +97,11 @@ class _HomeScreenState extends State<HomeScreen> {
     final auth = context.watch<AuthService>();
     final guest = auth.currentGuest;
 
-    // Calculate days until ceremony (Day 3 = Main event)
-    final mainEvent = _events.where((e) => e.dayNumber == 3).toList();
-    final ceremonyDate = mainEvent.isNotEmpty
-        ? DateTime.tryParse(mainEvent.first.eventDate)
-        : null;
-    final daysUntil = ceremonyDate != null
-        ? ceremonyDate.difference(DateTime.now()).inDays
-        : null;
+    // Countdown uses the active event with the highest day_number (updated dates from API).
+    final anchor = _countdownAnchorEvent(_events);
+    final ceremonyLocal = anchor != null ? _parseEventDateLocal(anchor.eventDate) : null;
+    final daysUntil =
+        ceremonyLocal != null ? _calendarDaysUntil(ceremonyLocal) : null;
 
     return Scaffold(
       body: RefreshIndicator(
@@ -179,11 +220,15 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                                   ),
                                   Text(
-                                    'Shrihan\'s Yogyopaveet Sanskar',
+                                    anchor != null && anchor.title.isNotEmpty
+                                        ? anchor.title
+                                        : 'Shrihan\'s Yogyopaveet Sanskar',
                                     style: TextStyle(
                                       fontSize: 12,
                                       color: Colors.white.withAlpha(180),
                                     ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
                                 ],
                               ),
