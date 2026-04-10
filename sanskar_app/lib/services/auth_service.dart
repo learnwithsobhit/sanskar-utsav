@@ -103,8 +103,8 @@ class AuthService extends ChangeNotifier {
     return (AuthLoginOutcome.failed, result['error']?.toString() ?? 'Invalid invite link');
   }
 
-  /// Request SMS OTP (requires matching E.164 phone on the guest record).
-  Future<String?> requestOtp({
+  /// Request OTP (SMS or WhatsApp per server config). On success, [deliveryChannel] is `whatsapp`, `sms`, or `none`.
+  Future<(String? errorMessage, String? deliveryChannel)> requestOtp({
     required String phoneE164,
     String? inviteToken,
     String? inviteCode,
@@ -125,8 +125,11 @@ class AuthService extends ChangeNotifier {
     _isLoading = false;
     notifyListeners();
 
-    if (result['success'] == true) return null;
-    return result['error']?.toString() ?? 'Could not send code';
+    if (result['success'] == true) {
+      final ch = result['delivery_channel']?.toString();
+      return (null, ch);
+    }
+    return (result['error']?.toString() ?? 'Could not send code', null);
   }
 
   /// Verify OTP and open session.

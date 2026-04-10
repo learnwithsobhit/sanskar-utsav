@@ -2,6 +2,7 @@ use actix_web::{get, post, web, HttpRequest, HttpResponse};
 use rand::Rng;
 use serde::Deserialize;
 use sqlx::PgPool;
+use std::env;
 use std::time::Duration;
 
 use crate::auth::invite_code::{self, hash_token};
@@ -11,8 +12,8 @@ use crate::config::AppConfig;
 use crate::models::guest::{
     LoginRequest, OtpRequestBody, OtpVerifyBody, RedeemInviteRequest,
 };
+use crate::services::otp_delivery;
 use crate::services::phone::normalize_e164_phone;
-use crate::services::sms_service;
 
 /// Sliding window for login attempts per client IP (behind proxy: uses `X-Forwarded-For` when set).
 const LOGIN_RATE_WINDOW: Duration = Duration::from_secs(900);
@@ -32,6 +33,12 @@ fn login_rate_key(req: &HttpRequest) -> String {
 
 fn otp_phone_rate_key(phone: &str) -> String {
     format!("ratelimit:otp:phone:{phone}")
+}
+
+fn log_otp_plaintext_on_delivery_failure() -> bool {
+    env::var("LOG_OTP_PLAINTEXT_ON_FAILURE")
+        .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Deserialize)]
@@ -203,10 +210,11 @@ pub async fn login(
     }
 }
 
-/// POST /api/auth/otp/request — send OTP to registered phone (Twilio or log-only fallback).
+/// POST /api/auth/otp/request — send OTP to registered phone (Twilio SMS / WhatsApp per `OTP_DELIVERY`).
 #[post("/api/auth/otp/request")]
 pub async fn otp_request(
     req: HttpRequest,
+    cfg: web::Data<AppConfig>,
     pool: web::Data<PgPool>,
     cache: web::Data<RedisCache>,
     body: web::Json<OtpRequestBody>,
@@ -294,22 +302,30 @@ pub async fn otp_request(
     }
 
     let msg = format!("Your Sanskar Utsav login code is {otp_str}. Valid for 10 minutes.");
-    match sms_service::send_sms_e164(&phone, &msg).await {
-        Ok(()) => {}
-        Err(_) => {
+    let delivery_channel = otp_delivery::send_login_otp(cfg.get_ref(), &phone, &msg).await;
+    if delivery_channel == "none" {
+        if log_otp_plaintext_on_delivery_failure() {
             tracing::warn!(
                 target: "otp",
-                "SMS failed; OTP for {} (guest {}) logged for operators: {}",
+                "OTP delivery failed; plaintext for {} (guest {}): {}",
                 phone,
                 guest.id,
                 otp_str
+            );
+        } else {
+            tracing::warn!(
+                target: "otp",
+                "OTP delivery failed for {} (guest {}); set LOG_OTP_PLAINTEXT_ON_FAILURE=1 to log code",
+                phone,
+                guest.id
             );
         }
     }
 
     HttpResponse::Ok().json(serde_json::json!({
         "success": true,
-        "message": "If SMS is configured, a code was sent. Otherwise check server logs (dev).",
+        "message": "If this invite matches your phone and delivery is configured, you should receive a verification code shortly.",
+        "delivery_channel": delivery_channel,
     }))
 }
 

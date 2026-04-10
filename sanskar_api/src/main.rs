@@ -15,6 +15,31 @@ use std::sync::Arc;
 
 use config::AppConfig;
 
+/// CORS: echo exact `Origin` for Firebase / custom web app URLs. Safari is stricter than Chrome
+/// with `Access-Control-Allow-Origin: *` on some cross-origin POSTs; explicit echo fixes that.
+/// `http://localhost:*` and `http://127.0.0.1:*` are allowed for Flutter web dev on any port.
+fn build_cors(cfg: &AppConfig) -> Cors {
+    let allow_any = cfg.cors_allow_any;
+    let origins = cfg.cors_allowed_origins.clone();
+
+    Cors::default()
+        .allow_any_method()
+        .allow_any_header()
+        .max_age(3600)
+        .allowed_origin_fn(move |origin, _head| {
+            if allow_any {
+                return true;
+            }
+            let Ok(s) = origin.to_str() else {
+                return false;
+            };
+            if s.starts_with("http://localhost:") || s.starts_with("http://127.0.0.1:") {
+                return true;
+            }
+            origins.iter().any(|o| o == s)
+        })
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // ── Configuration ──
@@ -83,11 +108,7 @@ async fn main() -> std::io::Result<()> {
     tracing::info!("✅ WebSocket state ready");
 
     HttpServer::new(move || {
-        let cors = Cors::default()
-            .allow_any_origin()
-            .allow_any_method()
-            .allow_any_header()
-            .max_age(3600);
+        let cors = build_cors(app_config.get_ref());
 
         App::new()
             .wrap(cors)

@@ -36,6 +36,8 @@ class _LoginScreenState extends State<LoginScreen>
   String? _error;
   bool _useInviteLink = false;
   bool _otpStep = false;
+  /// Last successful `delivery_channel` from the API (`whatsapp` / `sms` / `none`).
+  String? _otpDeliveryChannel;
   late AnimationController _animController;
   late Animation<Offset> _slideAnim;
 
@@ -111,6 +113,7 @@ class _LoginScreenState extends State<LoginScreen>
       if (outcome == AuthLoginOutcome.otpRequired) {
         setState(() {
           _otpStep = true;
+          _otpDeliveryChannel = null;
           _error = null;
         });
         return;
@@ -128,11 +131,28 @@ class _LoginScreenState extends State<LoginScreen>
     if (outcome == AuthLoginOutcome.otpRequired) {
       setState(() {
         _otpStep = true;
+        _otpDeliveryChannel = null;
         _error = null;
       });
       return;
     }
     setState(() => _error = err ?? 'Login failed');
+  }
+
+  IconData _otpSendButtonIcon() {
+    return switch (_otpDeliveryChannel) {
+      'whatsapp' => Icons.chat_bubble_outline,
+      'sms' => Icons.sms_outlined,
+      _ => Icons.send_outlined,
+    };
+  }
+
+  String _otpSendButtonLabel() {
+    return switch (_otpDeliveryChannel) {
+      'whatsapp' => 'Resend on WhatsApp',
+      'sms' => 'Resend SMS code',
+      _ => 'Send verification code',
+    };
   }
 
   Future<void> _requestOtp() async {
@@ -143,7 +163,7 @@ class _LoginScreenState extends State<LoginScreen>
       return;
     }
     final auth = context.read<AuthService>();
-    final err = await auth.requestOtp(
+    final (err, channel) = await auth.requestOtp(
       phoneE164: phone,
       inviteToken: _useInviteLink ? _tokenController.text.trim() : null,
       inviteCode: _useInviteLink ? null : _codeController.text.trim(),
@@ -152,9 +172,13 @@ class _LoginScreenState extends State<LoginScreen>
     if (err != null) {
       setState(() => _error = err);
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('If SMS is enabled, check your phone for the code.')),
-      );
+      setState(() => _otpDeliveryChannel = channel);
+      final hint = switch (channel) {
+        'whatsapp' => 'Check WhatsApp for your verification code.',
+        'sms' => 'Check your text messages for the code.',
+        _ => 'If delivery is configured, you should receive a code shortly.',
+      };
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(hint)));
     }
   }
 
@@ -201,7 +225,7 @@ class _LoginScreenState extends State<LoginScreen>
                     const SizedBox(height: 8),
                     Text(
                       _otpStep
-                          ? 'Enter the phone number your host registered and the SMS code.'
+                          ? 'Enter the phone number your host registered and the verification code.'
                           : 'Use your invite link, or enter the invite code you received.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
@@ -271,8 +295,8 @@ class _LoginScreenState extends State<LoginScreen>
                               const SizedBox(height: 12),
                               OutlinedButton.icon(
                                 onPressed: auth.isLoading ? null : _requestOtp,
-                                icon: const Icon(Icons.sms_outlined),
-                                label: const Text('Send SMS code'),
+                                icon: Icon(_otpSendButtonIcon()),
+                                label: Text(_otpSendButtonLabel()),
                               ),
                               const SizedBox(height: 16),
                               Text(
@@ -414,6 +438,7 @@ class _LoginScreenState extends State<LoginScreen>
                                 onPressed: () {
                                   setState(() {
                                     _otpStep = false;
+                                    _otpDeliveryChannel = null;
                                     _error = null;
                                   });
                                 },
